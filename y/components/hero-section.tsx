@@ -91,12 +91,14 @@ export function HeroSection() {
           Turn live conversations into a shared itinerary—maps, places, and bookings update as you talk.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2">
-          <Button
-            size="lg"
-            className="bg-accent-blue hover:bg-accent-blue/90 text-foreground px-8 py-6 text-lg font-medium"
-          >
-            Start a Trip
-          </Button>
+          <Link href="/meeting">
+            <Button
+              size="lg"
+              className="bg-accent-blue hover:bg-accent-blue/90 text-foreground px-8 py-6 text-lg font-medium"
+            >
+              Start a Trip
+            </Button>
+          </Link>
           <Link href="#how-it-works" className="text-muted-foreground hover:text-foreground transition-colors text-sm">
             See how it works
           </Link>
