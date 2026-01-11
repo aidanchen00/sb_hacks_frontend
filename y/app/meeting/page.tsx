@@ -2,9 +2,15 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacket_Kind } from "livekit-client"
+import { useWallet, useConnection } from "@solana/wallet-adapter-react"
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
 import { VideoConference } from "@/components/meeting/video-conference"
 import { MapboxMap } from "@/components/meeting/mapbox-map"
 import { ItineraryPanel, ItineraryItem } from "@/components/meeting/itinerary-panel"
+import { WalletConnectOverlay } from "@/components/meeting/wallet-connect-overlay"
+
+// Payment amount in SOL (devnet demo)
+const PAYMENT_AMOUNT_SOL = 0.5
 
 export default function MeetingPage() {
   const [room, setRoom] = useState<Room | null>(null)
@@ -16,6 +22,33 @@ export default function MeetingPage() {
   const [currentTool, setCurrentTool] = useState<string | null>(null)
   const [roomName, setRoomName] = useState<string>("")
   const [itinerary, setItinerary] = useState<ItineraryItem[]>([])
+  
+  // Wallet and payment states
+  const { publicKey, sendTransaction, connected: walletConnected } = useWallet()
+  const { connection } = useConnection()
+  const [showWalletOverlay, setShowWalletOverlay] = useState(true)
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false)
+  const [paymentStatus, setPaymentStatus] = useState<{
+    type: "success" | "error" | "pending" | null
+    message: string
+    signature?: string
+  }>({ type: null, message: "" })
+
+  // Check if Phantom is installed
+  const [phantomInstalled, setPhantomInstalled] = useState(false)
+  
+  useEffect(() => {
+    // Check for Phantom wallet
+    const checkPhantom = () => {
+      const phantom = (window as any)?.phantom?.solana
+      setPhantomInstalled(!!phantom?.isPhantom)
+    }
+    checkPhantom()
+    
+    // Re-check after a short delay (Phantom might load after page)
+    const timer = setTimeout(checkPhantom, 500)
+    return () => clearTimeout(timer)
+  }, [])
 
   useEffect(() => {
     // Initialize LiveKit room
@@ -83,6 +116,10 @@ export default function MeetingPage() {
               } else if (data.type === "ITINERARY_CLEAR") {
                 // Clear all itinerary items
                 setItinerary([])
+              } else if (data.type === "PAYMENT_EXECUTE") {
+                // Agent confirmed payment - trigger wallet transaction
+                console.log("💳 [PAYMENT] Agent triggered payment execution")
+                handleCheckout()
               } else {
                 handleMapUpdate(data)
               }
@@ -94,9 +131,17 @@ export default function MeetingPage() {
         
         await newRoom.connect(url, token)
         
-        // Enable camera and microphone by default
-        await newRoom.localParticipant.setCameraEnabled(true)
-        await newRoom.localParticipant.setMicrophoneEnabled(true)
+        // Enable camera and microphone by default (with error handling)
+        try {
+          await newRoom.localParticipant.setCameraEnabled(true)
+        } catch (e) {
+          console.warn("⚠️ Camera not available:", e)
+        }
+        try {
+          await newRoom.localParticipant.setMicrophoneEnabled(true)
+        } catch (e) {
+          console.warn("⚠️ Microphone not available:", e)
+        }
         
         setRoom(newRoom)
         setIsConnected(true)
@@ -196,6 +241,82 @@ export default function MeetingPage() {
     }
   }
 
+  // Checkout/Payment handler
+  const handleCheckout = useCallback(async () => {
+    if (!walletConnected || !publicKey || !sendTransaction) {
+      setPaymentStatus({ type: "error", message: "Please connect your wallet first" })
+      setShowWalletOverlay(true)
+      return
+    }
+
+    setIsProcessingPayment(true)
+    setPaymentStatus({ type: "pending", message: "Preparing transaction..." })
+
+    try {
+      // Fetch vendor public key from backend
+      console.log("💳 [PAYMENT] Fetching vendor wallet...")
+      const vendorResponse = await fetch("http://localhost:8000/api/solana/vendor")
+      if (!vendorResponse.ok) {
+        throw new Error("Failed to get vendor wallet")
+      }
+      const { vendorPublicKey } = await vendorResponse.json()
+      console.log("💳 [PAYMENT] Vendor wallet:", vendorPublicKey)
+
+      const vendorPubKey = new PublicKey(vendorPublicKey)
+      const lamports = PAYMENT_AMOUNT_SOL * LAMPORTS_PER_SOL
+
+      // Create transaction
+      setPaymentStatus({ type: "pending", message: "Building transaction..." })
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: vendorPubKey,
+          lamports,
+        })
+      )
+
+      // Get recent blockhash
+      const { blockhash } = await connection.getLatestBlockhash()
+      transaction.recentBlockhash = blockhash
+      transaction.feePayer = publicKey
+
+      // Send transaction - Phantom will prompt for confirmation
+      setPaymentStatus({ type: "pending", message: "Confirm in your wallet..." })
+      console.log("💳 [PAYMENT] Sending transaction...")
+      const signature = await sendTransaction(transaction, connection)
+      console.log("💳 [PAYMENT] Transaction sent:", signature)
+
+      // Confirm transaction
+      setPaymentStatus({ type: "pending", message: "Confirming transaction..." })
+      const confirmation = await connection.confirmTransaction(signature, "confirmed")
+      
+      if (confirmation.value.err) {
+        throw new Error("Transaction failed to confirm")
+      }
+
+      console.log("✅ [PAYMENT] Transaction confirmed!")
+      setPaymentStatus({
+        type: "success",
+        message: `Payment of ${PAYMENT_AMOUNT_SOL} SOL successful!`,
+        signature,
+      })
+
+      // Auto-dismiss success message after 10 seconds
+      setTimeout(() => {
+        setPaymentStatus({ type: null, message: "" })
+      }, 10000)
+
+    } catch (error: any) {
+      console.error("❌ [PAYMENT] Error:", error)
+      setPaymentStatus({
+        type: "error",
+        message: error.message || "Payment failed. Please try again.",
+      })
+    } finally {
+      setIsProcessingPayment(false)
+    }
+  }, [walletConnected, publicKey, sendTransaction, connection])
+
   // Itinerary handlers
   const handleAddToItinerary = useCallback((item: ItineraryItem) => {
     setItinerary((prev) => {
@@ -221,19 +342,88 @@ export default function MeetingPage() {
 
   if (!isConnected) {
     return (
-      <div className="flex items-center justify-center h-screen">
+      <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-          <p>Connecting to meeting...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500 mx-auto mb-4"></div>
+          <p className="text-white">Connecting to meeting...</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden">
+    <div className="flex h-screen w-full overflow-hidden bg-gray-900">
+      {/* Wallet Connect Overlay - shows on first load if not connected */}
+      {showWalletOverlay && !walletConnected && (
+        <WalletConnectOverlay onClose={() => setShowWalletOverlay(false)} />
+      )}
+
+      {/* Payment Status Toast */}
+      {paymentStatus.type && (
+        <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-right-5 duration-300">
+          <div className={`
+            p-4 rounded-lg border shadow-xl backdrop-blur-sm max-w-sm
+            ${paymentStatus.type === "success" ? "bg-green-900/90 border-green-500/50" : ""}
+            ${paymentStatus.type === "error" ? "bg-red-900/90 border-red-500/50" : ""}
+            ${paymentStatus.type === "pending" ? "bg-blue-900/90 border-blue-500/50" : ""}
+          `}>
+            <div className="flex items-start gap-3">
+              {paymentStatus.type === "pending" && (
+                <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              )}
+              {paymentStatus.type === "success" && (
+                <span className="text-green-400">✓</span>
+              )}
+              {paymentStatus.type === "error" && (
+                <span className="text-red-400">✕</span>
+              )}
+              <div className="flex-1">
+                <p className="text-white text-sm font-medium">{paymentStatus.message}</p>
+                {paymentStatus.signature && (
+                  <a
+                    href={`https://explorer.solana.com/tx/${paymentStatus.signature}?cluster=devnet`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:underline mt-1 block"
+                  >
+                    View on Solana Explorer →
+                  </a>
+                )}
+              </div>
+              <button
+                onClick={() => setPaymentStatus({ type: null, message: "" })}
+                className="text-gray-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Wallet Status Indicator */}
+      <div className="fixed top-4 left-4 z-40">
+        <button
+          onClick={() => setShowWalletOverlay(true)}
+          className={`
+            flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all
+            ${walletConnected 
+              ? "bg-green-900/80 border border-green-500/50 text-green-400"
+              : "bg-gray-800/80 border border-gray-600/50 text-gray-400 hover:border-purple-500/50 hover:text-purple-400"
+            }
+          `}
+        >
+          <span className={`w-2 h-2 rounded-full ${walletConnected ? "bg-green-400" : "bg-gray-500"}`} />
+          {walletConnected ? (
+            <span>{publicKey?.toBase58().slice(0, 4)}...{publicKey?.toBase58().slice(-4)}</span>
+          ) : (
+            <span>Connect Wallet</span>
+          )}
+        </button>
+      </div>
+
       {/* Left Side: Video Conference */}
-      <div className="w-1/2 border-r border-border overflow-hidden relative">
+      <div className="w-1/2 border-r border-gray-700 overflow-hidden relative">
         {room && <VideoConference room={room} />}
         
         {/* Agent Thinking State Overlay */}
@@ -289,9 +479,10 @@ export default function MeetingPage() {
           onRemoveItem={handleRemoveFromItinerary}
           onClearAll={handleClearItinerary}
           onReorder={handleReorderItinerary}
+          onCheckout={handleCheckout}
+          isProcessingPayment={isProcessingPayment}
         />
       </div>
     </div>
   )
 }
-

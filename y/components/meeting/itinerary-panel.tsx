@@ -4,6 +4,7 @@ import { useState, useCallback } from "react"
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core"
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
+import { useWallet } from "@solana/wallet-adapter-react"
 
 export interface ItineraryItem {
   id: string
@@ -15,11 +16,16 @@ export interface ItineraryItem {
   coordinates?: [number, number]
 }
 
+// SOL price for display (actual transaction is always 0.5 SOL on devnet)
+const SOL_USD_RATE = 150 // 1 SOL ≈ $150 for display purposes
+
 interface ItineraryPanelProps {
   items: ItineraryItem[]
   onRemoveItem: (itemId: string) => void
   onClearAll: () => void
   onReorder: (items: ItineraryItem[]) => void
+  onCheckout?: () => void
+  isProcessingPayment?: boolean
 }
 
 // Sortable item component
@@ -43,6 +49,9 @@ function SortableItem({ item, onRemove }: { item: ItineraryItem; onRemove: () =>
     hotel: "from-blue-500/20 to-blue-600/10 border-blue-500/30",
     activity: "from-green-500/20 to-green-600/10 border-green-500/30",
   }
+
+  // Convert USD to SOL for display
+  const solAmount = (item.estimatedCost / SOL_USD_RATE).toFixed(3)
 
   return (
     <div
@@ -70,9 +79,10 @@ function SortableItem({ item, onRemove }: { item: ItineraryItem; onRemove: () =>
         <p className="text-xs text-gray-400">{item.costLabel}</p>
       </div>
 
-      {/* Cost */}
+      {/* Cost - USD and SOL */}
       <div className="text-right">
         <p className="text-sm font-semibold text-purple-300">${item.estimatedCost}</p>
+        <p className="text-xs text-gray-500">{solAmount} SOL</p>
       </div>
 
       {/* Remove button */}
@@ -89,8 +99,9 @@ function SortableItem({ item, onRemove }: { item: ItineraryItem; onRemove: () =>
   )
 }
 
-export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: ItineraryPanelProps) {
+export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder, onCheckout, isProcessingPayment }: ItineraryPanelProps) {
   const [isExpanded, setIsExpanded] = useState(true)
+  const { connected, connecting } = useWallet()
   
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -110,7 +121,11 @@ export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: I
     }
   }, [items, onReorder])
 
-  const totalCost = items.reduce((sum, item) => sum + item.estimatedCost, 0)
+  const totalCostUSD = items.reduce((sum, item) => sum + item.estimatedCost, 0)
+  const totalCostSOL = (totalCostUSD / SOL_USD_RATE).toFixed(3)
+  
+  // Actual payment amount (always 0.5 SOL on devnet for demo)
+  const paymentAmountSOL = 0.5
 
   // Count by type
   const counts = items.reduce(
@@ -149,8 +164,9 @@ export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: I
           <div className="flex items-center gap-3">
             {/* Total cost */}
             <div className="text-right">
-              <p className="text-xs text-gray-400">Total</p>
-              <p className="text-lg font-bold text-purple-400">${totalCost.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">Total (Estimated)</p>
+              <p className="text-lg font-bold text-purple-400">${totalCostUSD.toLocaleString()}</p>
+              <p className="text-xs text-gray-500">≈ {totalCostSOL} SOL</p>
             </div>
 
             {/* Expand/collapse */}
@@ -179,7 +195,19 @@ export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: I
               </DndContext>
             </div>
 
-            {/* Footer with clear button */}
+            {/* Payment summary */}
+            <div className="mx-3 mb-3 p-3 bg-gradient-to-r from-purple-900/50 to-pink-900/50 rounded-lg border border-purple-500/20">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-gray-400">Expected Cost</span>
+                <span className="text-sm font-semibold text-white">${totalCostUSD.toLocaleString()} ≈ {totalCostSOL} SOL</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">Demo Payment (Devnet)</span>
+                <span className="text-sm font-bold text-green-400">{paymentAmountSOL} SOL</span>
+              </div>
+            </div>
+
+            {/* Footer with clear and checkout buttons */}
             <div className="flex items-center justify-between p-3 border-t border-purple-500/20 bg-black/20">
               <button
                 onClick={onClearAll}
@@ -187,7 +215,40 @@ export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: I
               >
                 Clear All
               </button>
-              <p className="text-xs text-gray-500">Drag items to reorder</p>
+              
+              <div className="flex items-center gap-3">
+                <p className="text-xs text-gray-500">Drag to reorder</p>
+                
+                {/* Checkout button */}
+                <button
+                  onClick={onCheckout}
+                  disabled={!connected || isProcessingPayment}
+                  className={`
+                    px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-200
+                    ${connected && !isProcessingPayment
+                      ? "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
+                      : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                    }
+                  `}
+                >
+                  {isProcessingPayment ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Processing...
+                    </span>
+                  ) : !connected ? (
+                    "Connect Wallet to Checkout"
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <span>Checkout</span>
+                      <span className="text-xs opacity-75">({paymentAmountSOL} SOL)</span>
+                    </span>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -195,4 +256,3 @@ export function ItineraryPanel({ items, onRemoveItem, onClearAll, onReorder }: I
     </div>
   )
 }
-
