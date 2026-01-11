@@ -338,7 +338,7 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
         }
         return null
       })
-      .filter((coord): coord is [number, number] => coord !== null)
+      .filter((coord: [number, number] | null): coord is [number, number] => coord !== null)
 
     if (coordinates.length < 2) {
       console.warn("Route has insufficient coordinates:", coordinates.length)
@@ -355,11 +355,18 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
       }
     }
 
+    // Route style configuration
+    const ROUTE_COLOR = "#346beb" // Vibrant blue
+
     // Update or add route source
     const routeSource = mapInstance.getSource("route") as mapboxgl.GeoJSONSource
     if (routeSource) {
       // Update existing source data
       routeSource.setData(routeFeature as any)
+      // Also update the paint properties in case they changed
+      if (mapInstance.getLayer("route")) {
+        mapInstance.setPaintProperty("route", "line-color", ROUTE_COLOR)
+      }
     } else {
       // Add new source
       mapInstance.addSource("route", {
@@ -384,20 +391,20 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
             "line-cap": "round"
           },
           paint: {
-            "line-color": "#22d3ee",
+            "line-color": ROUTE_COLOR, // Vibrant blue
             "line-width": [
               "interpolate",
               ["linear"],
               ["zoom"],
               10,
-              4,
+              5,
               15,
-              6,
+              7,
               20,
-              8
+              9
             ],
-            "line-opacity": 0.95,
-            "line-blur": 0.5
+            "line-opacity": 1,
+            "line-blur": 0
           }
         }
 
@@ -422,8 +429,8 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
       })
     } else if (coordinates.length > 0) {
       // If no bounds provided, calculate from path coordinates
-      const lngs = coordinates.map(c => c[0])
-      const lats = coordinates.map(c => c[1])
+      const lngs = coordinates.map((c: [number, number]) => c[0])
+      const lats = coordinates.map((c: [number, number]) => c[1])
       const bounds = new mapboxgl.LngLatBounds(
         [Math.min(...lngs), Math.min(...lats)],
         [Math.max(...lngs), Math.max(...lats)]

@@ -122,6 +122,27 @@ export function VideoConference({ room }: VideoConferenceProps) {
     }
   }, [room])
 
+  // CRITICAL: Audio renderer to actually play audio from remote participants
+  const AudioRenderer = ({ track }: { track: Track | null }) => {
+    const audioRef = useRef<HTMLAudioElement>(null)
+
+    useEffect(() => {
+      if (audioRef.current && track) {
+        console.log("🔊 Attaching audio track:", track.sid)
+        track.attach(audioRef.current)
+        // Ensure audio plays
+        audioRef.current.play().catch(e => console.log("Audio autoplay blocked:", e))
+        return () => {
+          console.log("🔇 Detaching audio track:", track.sid)
+          track.detach()
+        }
+      }
+    }, [track])
+
+    // Hidden audio element - audio plays automatically
+    return <audio ref={audioRef} autoPlay playsInline />
+  }
+
   const VideoRenderer = ({ track, participant, name }: { track: RemoteVideoTrack | LocalVideoTrack | null, participant: Participant, name: string }) => {
     const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -229,6 +250,11 @@ export function VideoConference({ room }: VideoConferenceProps) {
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
             <span className="text-xs text-green-400">Live</span>
           </div>
+        )}
+        
+        {/* CRITICAL: Attach audio track for remote participants (including agent) */}
+        {!isLocal && hasAudio && audioTrack && (
+          <AudioRenderer track={audioTrack} />
         )}
       </div>
     )
