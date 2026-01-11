@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
+import { useSearchParams } from "next/navigation"
 import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacket_Kind } from "livekit-client"
 import { useWallet, useConnection } from "@solana/wallet-adapter-react"
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
@@ -12,7 +13,31 @@ import { WalletConnectOverlay } from "@/components/meeting/wallet-connect-overla
 // Payment amount in SOL (devnet demo)
 const PAYMENT_AMOUNT_SOL = 0.5
 
+// Tool notification interface
+interface ToolNotification {
+  id: string
+  tool: string
+  message: string
+  icon: string
+}
+
+// Map tool names to user-friendly messages and icons
+const toolDisplayInfo: Record<string, { message: string; icon: string }> = {
+  search_restaurants: { message: "Searching for restaurants...", icon: "🍽️" },
+  get_activities: { message: "Finding activities...", icon: "🎯" },
+  search_hotels: { message: "Looking for hotels...", icon: "🏨" },
+  update_map: { message: "Updating route...", icon: "🗺️" },
+  get_location_coordinates: { message: "Finding location...", icon: "📍" },
+  add_to_itinerary: { message: "Adding to itinerary...", icon: "📋" },
+  remove_from_itinerary: { message: "Removing from itinerary...", icon: "🗑️" },
+  clear_itinerary: { message: "Clearing itinerary...", icon: "🧹" },
+}
+
+// Default shared room name - change this for your team!
+const DEFAULT_ROOM_NAME = process.env.NEXT_PUBLIC_LIVEKIT_ROOM || "nomadsync-team"
+
 export default function MeetingPage() {
+  const searchParams = useSearchParams()
   const [room, setRoom] = useState<Room | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [mapRoute, setMapRoute] = useState<any>(null)
@@ -23,7 +48,12 @@ export default function MeetingPage() {
   const [roomName, setRoomName] = useState<string>("")
   const [itinerary, setItinerary] = useState<ItineraryItem[]>([])
   
-  // Wallet and payment states
+  // Fly to target state (from featuretemp)
+  const [flyToTarget, setFlyToTarget] = useState<{ coordinates: [number, number]; name?: string; zoom?: number } | null>(null)
+  const [toolNotifications, setToolNotifications] = useState<ToolNotification[]>([])
+  const [routeNotification, setRouteNotification] = useState<string | null>(null)
+  
+  // Wallet and payment states (from Solana feature)
   const { publicKey, sendTransaction, connected: walletConnected } = useWallet()
   const { connection } = useConnection()
   const [showWalletOverlay, setShowWalletOverlay] = useState(true)
@@ -64,11 +94,12 @@ export default function MeetingPage() {
           localStorage.setItem("userName", userName)
         }
         
-        // Generate a unique room name for this session (or use existing one)
-        // Clear old room to get fresh agent
-        const newRoomName = `nomad-${Date.now().toString(36)}`
+        // Room name priority: URL param > env variable > default
+        // Use ?room=my-room in URL to share with teammates
+        const urlRoom = searchParams.get("room")
+        const newRoomName = urlRoom || DEFAULT_ROOM_NAME
         setRoomName(newRoomName)
-        console.log(`🏠 Creating fresh room: ${newRoomName}`)
+        console.log(`🏠 Joining room: ${newRoomName}${urlRoom ? " (from URL)" : " (default)"}`)
         
         const response = await fetch("/api/livekit-token", {
           method: "POST",
@@ -79,29 +110,47 @@ export default function MeetingPage() {
           })
         })
         
-        const { token, url } = await response.json()
+        const { token, url, roomName: actualRoomName } = await response.json()
+        if (actualRoomName) {
+          setRoomName(actualRoomName)
+        }
         
-        const newRoom = new Room()
+        // Simple room with default settings
+        const newRoom = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+        })
         
         // Set up data channel listener for map updates and agent state
         newRoom.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
           if (kind === DataPacket_Kind.RELIABLE) {
             try {
               const data = JSON.parse(new TextDecoder().decode(payload))
-              console.log("📨 [DATA RECEIVED] Received data from agent:", {
-                type: data.type,
-                hasRoute: !!data.route,
-                hasPath: !!data.path,
-                waypointsCount: data.waypoints?.length || 0,
-                pathLength: data.route?.path?.length || data.path?.length || 0,
-                agentState: data.state
-              })
               
               // Handle agent state updates
               if (data.type === "AGENT_STATE") {
                 setAgentState(data.state || "idle")
                 setAgentThinkingMessage(data.thinking_message || null)
                 setCurrentTool(data.tool_name || null)
+                
+                // Show snackbar notification when a tool is called
+                if (data.tool_name && data.state === "thinking") {
+                  const toolInfo = toolDisplayInfo[data.tool_name] || { 
+                    message: `Running ${data.tool_name.replace(/_/g, ' ')}...`, 
+                    icon: "⚙️" 
+                  }
+                  const notification: ToolNotification = {
+                    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                    tool: data.tool_name,
+                    message: toolInfo.message,
+                    icon: toolInfo.icon
+                  }
+                  setToolNotifications(prev => [...prev.slice(-2), notification]) // Keep max 3
+                  // Auto-remove after 3 seconds
+                  setTimeout(() => {
+                    setToolNotifications(prev => prev.filter(n => n.id !== notification.id))
+                  }, 3000)
+                }
               } else if (data.type === "ITINERARY_ADD") {
                 // Add item to itinerary
                 const newItem: ItineraryItem = data.item
@@ -112,6 +161,15 @@ export default function MeetingPage() {
                   }
                   return [...prev, newItem]
                 })
+                
+                // Fly to the new item's location
+                if (newItem.coordinates && newItem.coordinates.length >= 2) {
+                  setFlyToTarget({
+                    coordinates: newItem.coordinates as [number, number],
+                    name: newItem.name,
+                    zoom: 17 // High zoom for detailed view
+                  })
+                }
               } else if (data.type === "ITINERARY_REMOVE") {
                 // Remove item from itinerary by name (fuzzy match)
                 const itemName = data.item_name?.toLowerCase()
@@ -128,7 +186,7 @@ export default function MeetingPage() {
                 handleMapUpdate(data)
               }
             } catch (e) {
-              console.error("❌ [DATA ERROR] Error parsing data channel message:", e)
+              // Ignore parse errors
             }
           }
         })
@@ -164,10 +222,7 @@ export default function MeetingPage() {
   }, [])
 
   const handleMapUpdate = (data: any) => {
-    console.log("🗺️ [MAP UPDATE HANDLER] Processing update:", data.type)
-    
     if (data.type === "MAP_UPDATE") {
-      console.log("📍 [MAP UPDATE] Handling location markers")
       // Handle location markers (restaurants, activities, hotels)
       if (data.data?.restaurants) {
         const markers = data.data.restaurants.map((r: any) => ({
@@ -176,7 +231,6 @@ export default function MeetingPage() {
           type: "restaurant",
           data: r
         }))
-        console.log(`   ✅ Added ${markers.length} restaurant markers`)
         setMapMarkers((prev) => [...prev, ...markers])
       }
       if (data.data?.activities) {
@@ -186,7 +240,6 @@ export default function MeetingPage() {
           type: "activity",
           data: a
         }))
-        console.log(`   ✅ Added ${markers.length} activity markers`)
         setMapMarkers((prev) => [...prev, ...markers])
       }
       if (data.data?.hotels) {
@@ -196,11 +249,9 @@ export default function MeetingPage() {
           type: "hotel",
           data: h
         }))
-        console.log(`   ✅ Added ${markers.length} hotel markers`)
         setMapMarkers((prev) => [...prev, ...markers])
       }
     } else if (data.type === "ROUTE_UPDATE") {
-      // Handle route updates - use data.route if available, otherwise use top-level data
       const routeData = data.route || {
         path: data.path || [],
         waypoints: data.waypoints || [],
@@ -208,23 +259,13 @@ export default function MeetingPage() {
         route_type: data.route_type || "driving"
       }
       
-      console.log("🛣️ [ROUTE UPDATE] Received route:", {
-        pathLength: routeData.path?.length || 0,
-        waypointsCount: routeData.waypoints?.length || 0,
-        hasBounds: !!routeData.bounds,
-        firstPathPoint: routeData.path?.[0],
-        lastPathPoint: routeData.path?.[routeData.path?.length - 1]
-      })
-      
       setMapRoute(routeData)
       
-      // Only show start and end waypoints, not every point in the path
+      // Only show start and end waypoints
       if (data.waypoints || routeData.waypoints) {
         const waypoints = data.waypoints || routeData.waypoints || []
-        // Only use first and last waypoint (start and end)
         const startEndWaypoints = waypoints.length > 0 
           ? [waypoints[0], waypoints[waypoints.length - 1]].filter((wp, idx, arr) => 
-              // Remove duplicate if start and end are the same
               idx === 0 || wp.location !== arr[0].location
             )
           : []
@@ -235,9 +276,7 @@ export default function MeetingPage() {
           type: "waypoint",
           data: { ...wp, label: idx === 0 ? "Start" : "End" }
         }))
-        console.log(`   ✅ Added ${waypointMarkers.length} waypoint markers (start and end only)`)
         setMapMarkers((prev) => {
-          // Remove old waypoint markers and add new ones
           const filtered = prev.filter(m => m.type !== "waypoint")
           return [...filtered, ...waypointMarkers]
         })
@@ -349,6 +388,15 @@ export default function MeetingPage() {
       }
       return [...prev, item]
     })
+    
+    // Fly to the added item's location
+    if (item.coordinates && item.coordinates.length >= 2) {
+      setFlyToTarget({
+        coordinates: item.coordinates as [number, number],
+        name: item.name,
+        zoom: 17
+      })
+    }
   }, [])
 
   const handleRemoveFromItinerary = useCallback((itemId: string) => {
@@ -362,6 +410,83 @@ export default function MeetingPage() {
   const handleReorderItinerary = useCallback((newItems: ItineraryItem[]) => {
     setItinerary(newItems)
   }, [])
+
+  // Update route when itinerary changes (2+ items with coordinates)
+  useEffect(() => {
+    const itemsWithCoords = itinerary.filter(item => 
+      item.coordinates && item.coordinates.length >= 2
+    )
+    
+    if (itemsWithCoords.length >= 2) {
+      // Build waypoints from itinerary in order
+      const waypoints = itemsWithCoords.map(item => ({
+        location: item.name,
+        coordinates: item.coordinates
+      }))
+      
+      // Calculate route through all waypoints
+      const calculateItineraryRoute = async () => {
+        try {
+          // Call MCP server to get route
+          const response = await fetch("http://localhost:8000/tools/update_map", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              waypoints: itemsWithCoords.map(item => item.location || item.name),
+              route_type: "driving"
+            })
+          })
+          
+          if (response.ok) {
+            const routeData = await response.json()
+            if (routeData.path && routeData.path.length > 0) {
+              setMapRoute({
+                path: routeData.path,
+                waypoints: waypoints,
+                bounds: routeData.bounds,
+                route_type: "driving"
+              })
+              
+              // Show route update notification
+              const stopNames = itemsWithCoords.slice(0, 3).map(i => i.name).join(" → ")
+              const suffix = itemsWithCoords.length > 3 ? ` + ${itemsWithCoords.length - 3} more` : ""
+              setRouteNotification(`Route updated: ${stopNames}${suffix}`)
+              setTimeout(() => setRouteNotification(null), 4000)
+            }
+          }
+        } catch (error) {
+          // If MCP fails, create a simple direct route from coordinates
+          const path = itemsWithCoords.flatMap(item => {
+            const [lat, lng] = item.coordinates!
+            return [[lat, lng]]
+          })
+          
+          if (path.length >= 2) {
+            setMapRoute({
+              path: path,
+              waypoints: waypoints,
+              route_type: "driving"
+            })
+            
+            setRouteNotification(`Route updated with ${itemsWithCoords.length} stops`)
+            setTimeout(() => setRouteNotification(null), 4000)
+          }
+        }
+      }
+      
+      calculateItineraryRoute()
+    } else if (itemsWithCoords.length === 1) {
+      // Single item - just fly to it, no route
+      setFlyToTarget({
+        coordinates: itemsWithCoords[0].coordinates as [number, number],
+        name: itemsWithCoords[0].name,
+        zoom: 15
+      })
+    } else if (itinerary.length === 0) {
+      // Clear route when itinerary is empty
+      setMapRoute(null)
+    }
+  }, [itinerary])
 
   if (!isConnected) {
     return (
@@ -425,8 +550,24 @@ export default function MeetingPage() {
         </div>
       )}
 
-      {/* Wallet Status Indicator - Top right corner */}
-      <div className="fixed top-4 right-4 z-40">
+      {/* Room & Wallet Status - Top right corner */}
+      <div className="fixed top-4 right-4 z-40 flex flex-col gap-2 items-end">
+        {/* Room Name with Share Link */}
+        {roomName && (
+          <button
+            onClick={() => {
+              const shareUrl = `${window.location.origin}/meeting?room=${roomName}`
+              navigator.clipboard.writeText(shareUrl)
+              alert(`Link copied! Share with teammates:\n${shareUrl}`)
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-900/80 border border-purple-500/50 text-purple-300 hover:bg-purple-800/80 transition-all"
+            title="Click to copy room link"
+          >
+            <span>🔗 Room: {roomName}</span>
+          </button>
+        )}
+        
+        {/* Wallet Status */}
         <button
           onClick={() => setShowWalletOverlay(true)}
           className={`
@@ -461,8 +602,11 @@ export default function MeetingPage() {
                   </div>
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-blue-400">🤖 Thinking</span>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-semibold text-blue-400 flex items-center gap-1.5">
+                      <img src="/deepgram-logo.png" alt="" className="w-4 h-4 rounded-full" />
+                      Nomad is thinking...
+                    </span>
                     {currentTool && (
                       <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded">
                         {currentTool.replace('_', ' ')}
@@ -482,7 +626,10 @@ export default function MeetingPage() {
             <div className="bg-green-900/90 backdrop-blur-sm border border-green-500/50 rounded-full px-3 py-1.5 shadow-lg">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-xs font-semibold text-green-400">🤖 Speaking</span>
+                <span className="text-sm font-semibold text-green-400 flex items-center gap-1.5">
+                  <img src="/deepgram-logo.png" alt="" className="w-4 h-4 rounded-full" />
+                  Nomad is speaking...
+                </span>
               </div>
             </div>
           </div>
@@ -495,7 +642,48 @@ export default function MeetingPage() {
           route={mapRoute} 
           markers={mapMarkers} 
           onAddToItinerary={handleAddToItinerary}
+          flyToTarget={flyToTarget}
         />
+        
+        {/* Tool Notification Snackbar */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 pointer-events-none">
+          {toolNotifications.map((notification, index) => (
+            <div
+              key={notification.id}
+              className="animate-in fade-in slide-in-from-top-2 duration-300 pointer-events-auto"
+              style={{ 
+                animationDelay: `${index * 50}ms`,
+                opacity: 1 - (index * 0.15)
+              }}
+            >
+              <div className="bg-gray-900/95 backdrop-blur-md border border-gray-700/50 rounded-xl px-4 py-2.5 shadow-2xl flex items-center gap-3 min-w-[200px]">
+                <span className="text-lg">{notification.icon}</span>
+                <span className="text-sm font-medium text-gray-200">{notification.message}</span>
+                <div className="ml-auto">
+                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        
+        {/* Route Update Notification Snackbar */}
+        {routeNotification && (
+          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="bg-gradient-to-r from-blue-600/95 to-indigo-600/95 backdrop-blur-md border border-blue-400/30 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                </svg>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs font-medium text-blue-200 uppercase tracking-wide">Route Updated</span>
+                <span className="text-sm font-semibold text-white">{routeNotification}</span>
+              </div>
+              <div className="ml-2 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></div>
+            </div>
+          </div>
+        )}
         
         {/* Itinerary Panel */}
         <ItineraryPanel

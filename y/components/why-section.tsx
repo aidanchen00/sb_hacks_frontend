@@ -45,7 +45,7 @@ export function WhySection() {
   return (
     <section ref={sectionRef} className="py-24 md:py-32 border-t border-border/30">
       <div className="container mx-auto px-6">
-        <h2 className="text-3xl md:text-4xl font-bold text-center mb-16 text-foreground">Why NomadSync</h2>
+        <h2 className="text-3xl md:text-4xl font-bold text-center mb-16 text-foreground">Why Nomad</h2>
         <div className="grid md:grid-cols-3 gap-8 md:gap-12">
           {features.map((feature, index) => (
             <div

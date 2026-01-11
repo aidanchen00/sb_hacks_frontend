@@ -5,7 +5,7 @@ import { WalletProvider } from "@/components/providers/wallet-provider"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "NomadSync — Plan trips. Together. In real time.",
+  title: "Nomad — Plan trips. Together. In real time.",
   description: "Turn live conversations into a shared itinerary—maps, places, and bookings update as you talk.",
   generator: "v0.app",
   icons: {

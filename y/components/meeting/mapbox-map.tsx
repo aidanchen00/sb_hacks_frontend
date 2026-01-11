@@ -67,18 +67,27 @@ export interface ItineraryItem {
   coordinates?: [number, number]
 }
 
+interface FlyToTarget {
+  coordinates: [number, number] // [lat, lng]
+  name?: string
+  zoom?: number
+}
+
 interface MapboxMapProps {
   route: any
   markers: any[]
   onAddToItinerary?: (item: ItineraryItem) => void
+  flyToTarget?: FlyToTarget | null
 }
 
-export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) {
+export function MapboxMap({ route, markers, onAddToItinerary, flyToTarget }: MapboxMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<mapboxgl.Map | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
   const [tokenError, setTokenError] = useState<string | null>(null)
   const markersRef = useRef<Map<string, mapboxgl.Marker>>(new Map())
+  const [hasRoute, setHasRoute] = useState(false)
+  const rotationAnimationRef = useRef<number | null>(null)
   
   // Inject custom styles on mount
   useEffect(() => {
@@ -145,13 +154,13 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
       style: "mapbox://styles/mapbox/standard", // Modern standard style with 3D support
-      center: [-122.4194, 37.7749], // San Francisco default
-      zoom: 10,
-      pitch: 65, // Increased 3D tilt for dramatic effect (0-85 degrees)
+      center: [0, 20], // Center on Atlantic for nice globe view
+      zoom: 1.5, // Zoomed out to show full globe
+      pitch: 0, // Flat view for globe
       bearing: 0, // Rotation angle
-      accessToken: token,  // Also pass as option for redundancy
-      antialias: true, // Enable antialiasing for smoother 3D rendering
-      projection: "globe", // Enable globe projection for modern 3D effect
+      accessToken: token,
+      antialias: true,
+      projection: "globe", // Globe projection for rotating earth effect
       config: {
         basemap: {
           lightPreset: "night" // Dark theme with night lighting
@@ -178,14 +187,32 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
           exaggeration: 2.0 // Increased for more dramatic terrain
         })
         
-        // Add dark theme fog/atmosphere effect
+        // Add dark theme fog/atmosphere effect for globe view
         map.current!.setFog({
           color: "rgb(20, 30, 48)", // Lower atmosphere - dark blue-gray
           "high-color": "rgb(8, 15, 30)", // Upper atmosphere - very dark blue
-          "horizon-blend": 0.15, // Atmosphere thickness
-          "space-color": "rgb(0, 0, 10)", // Deep space background - almost black
-          "star-intensity": 1.0 // Enhanced star effect for dark theme (max value is 1.0)
+          "horizon-blend": 0.4, // More atmosphere for globe view
+          "space-color": "rgb(5, 5, 15)", // Deep space background
+          "star-intensity": 1.0 // Stars visible in space
         })
+        
+        // Start globe rotation animation
+        const spinGlobe = () => {
+          if (!map.current || hasRoute) return
+          
+          const center = map.current.getCenter()
+          center.lng += 0.05 // Rotate slowly (half speed)
+          map.current.setCenter(center)
+          
+          rotationAnimationRef.current = requestAnimationFrame(spinGlobe)
+        }
+        
+        // Start spinning after a brief delay
+        setTimeout(() => {
+          if (!hasRoute) {
+            spinGlobe()
+          }
+        }, 1000)
         
         // Find the label layer to insert buildings before it
         const layers = map.current!.getStyle().layers
@@ -306,6 +333,11 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
       })
 
       return () => {
+        // Stop rotation animation on cleanup
+        if (rotationAnimationRef.current) {
+          cancelAnimationFrame(rotationAnimationRef.current)
+          rotationAnimationRef.current = null
+        }
         if (map.current) {
           map.current.remove()
           map.current = null
@@ -331,10 +363,23 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
         if (mapInstance.getLayer("route")) {
           mapInstance.removeLayer("route")
         }
+        if (mapInstance.getLayer("route-border")) {
+          mapInstance.removeLayer("route-border")
+        }
+        if (mapInstance.getLayer("route-glow")) {
+          mapInstance.removeLayer("route-glow")
+        }
         mapInstance.removeSource("route")
       }
       return
     }
+    
+    // Stop globe rotation when route is added
+    if (rotationAnimationRef.current) {
+      cancelAnimationFrame(rotationAnimationRef.current)
+      rotationAnimationRef.current = null
+    }
+    setHasRoute(true)
 
     // Process route path coordinates
     const coordinates = route.path
@@ -367,8 +412,11 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
       }
     }
 
-    // Route style configuration
-    const ROUTE_COLOR = "#346beb" // Vibrant blue
+    // Route style configuration - Google Maps inspired
+    const ROUTE_COLOR = "#4285F4" // Google blue
+    const ROUTE_BORDER_COLOR = "#1a53b0" // Darker blue border
+    const ROUTE_WIDTH = 8 // Main line width
+    const ROUTE_BORDER_WIDTH = 12 // Border/casing width
 
     // Update or add route source
     const routeSource = mapInstance.getSource("route") as mapboxgl.GeoJSONSource
@@ -378,6 +426,14 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
       // Also update the paint properties in case they changed
       if (mapInstance.getLayer("route")) {
         mapInstance.setPaintProperty("route", "line-color", ROUTE_COLOR)
+        mapInstance.setPaintProperty("route", "line-width", ROUTE_WIDTH)
+      }
+      if (mapInstance.getLayer("route-border")) {
+        mapInstance.setPaintProperty("route-border", "line-color", ROUTE_BORDER_COLOR)
+        mapInstance.setPaintProperty("route-border", "line-width", ROUTE_BORDER_WIDTH)
+      }
+      if (mapInstance.getLayer("route-glow")) {
+        mapInstance.setPaintProperty("route-glow", "line-color", ROUTE_COLOR)
       }
     } else {
       // Add new source
@@ -386,15 +442,43 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
         data: routeFeature as any
       })
 
-      // Add line layer - insert before any symbol layers so route is visible
+      // Add route layers - Google Maps style with border/casing
       if (!mapInstance.getLayer("route")) {
-        // Find the first symbol layer to insert before it
-        const layers = mapInstance.getStyle().layers
-        const firstSymbolLayer = layers.find(
-          (layer) => layer.type === "symbol" && layer.layout?.["text-field"]
-        )
+        // Layer 1: Outer glow for visibility
+        mapInstance.addLayer({
+          id: "route-glow",
+          type: "line",
+          source: "route",
+          layout: {
+            "line-join": "round",
+            "line-cap": "round"
+          },
+          paint: {
+            "line-color": ROUTE_COLOR,
+            "line-width": 20,
+            "line-opacity": 0.15,
+            "line-blur": 8
+          }
+        })
 
-        const layerConfig: mapboxgl.LineLayer = {
+        // Layer 2: Dark border/casing (like Google Maps)
+        mapInstance.addLayer({
+          id: "route-border",
+          type: "line",
+          source: "route",
+          layout: {
+            "line-join": "round",
+            "line-cap": "round"
+          },
+          paint: {
+            "line-color": ROUTE_BORDER_COLOR,
+            "line-width": ROUTE_BORDER_WIDTH,
+            "line-opacity": 1
+          }
+        })
+
+        // Layer 3: Main route line on top
+        mapInstance.addLayer({
           id: "route",
           type: "line",
           source: "route",
@@ -403,42 +487,30 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
             "line-cap": "round"
           },
           paint: {
-            "line-color": ROUTE_COLOR, // Vibrant blue
-            "line-width": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              10,
-              5,
-              15,
-              7,
-              20,
-              9
-            ],
-            "line-opacity": 1,
-            "line-blur": 0
+            "line-color": ROUTE_COLOR,
+            "line-width": ROUTE_WIDTH,
+            "line-opacity": 1
           }
-        }
-
-        if (firstSymbolLayer) {
-          mapInstance.addLayer(layerConfig, firstSymbolLayer.id)
-        } else {
-          mapInstance.addLayer(layerConfig)
-        }
+        })
       }
     }
 
-    // Fit map to route bounds (prioritize bounds from waypoints)
+    // Fit map to route bounds with dramatic transition from globe
+    const fitOptions = {
+      padding: { top: 80, bottom: 80, left: 80, right: 80 },
+      duration: 3000, // Longer duration for dramatic zoom from globe
+      maxZoom: 14,
+      pitch: 60, // Add 3D tilt when zooming in
+      bearing: 0,
+      essential: true
+    }
+    
     if (route.bounds && route.bounds.north && route.bounds.south && route.bounds.east && route.bounds.west) {
       const bounds = new mapboxgl.LngLatBounds(
         [route.bounds.west, route.bounds.south],
         [route.bounds.east, route.bounds.north]
       )
-      mapInstance.fitBounds(bounds, {
-        padding: { top: 80, bottom: 80, left: 80, right: 80 },
-        duration: 1000,
-        maxZoom: 15
-      })
+      mapInstance.fitBounds(bounds, fitOptions)
     } else if (coordinates.length > 0) {
       // If no bounds provided, calculate from path coordinates
       const lngs = coordinates.map((c: [number, number]) => c[0])
@@ -447,11 +519,7 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
         [Math.min(...lngs), Math.min(...lats)],
         [Math.max(...lngs), Math.max(...lats)]
       )
-      mapInstance.fitBounds(bounds, {
-        padding: { top: 80, bottom: 80, left: 80, right: 80 },
-        duration: 1000,
-        maxZoom: 15
-      })
+      mapInstance.fitBounds(bounds, fitOptions)
     } else if (route.waypoints && route.waypoints.length > 0) {
       // Fallback: calculate bounds from waypoints
       const waypointCoords = route.waypoints
@@ -465,11 +533,7 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
           [Math.min(...lngs), Math.min(...lats)],
           [Math.max(...lngs), Math.max(...lats)]
         )
-        mapInstance.fitBounds(bounds, {
-          padding: { top: 80, bottom: 80, left: 80, right: 80 },
-          duration: 1000,
-          maxZoom: 15
-        })
+        mapInstance.fitBounds(bounds, fitOptions)
       }
     }
   }, [route, isLoaded])
@@ -513,30 +577,49 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
       const el = document.createElement("div")
       el.className = "custom-marker"
 
-      // Theme colors and icons for different marker types
-      const markerConfig: Record<string, { color: string; gradient: string; icon: string; size: number }> = {
+      // Modern SVG icons for different marker types (circular design for accurate positioning)
+      const markerConfig: Record<string, { color: string; gradient: string; iconSvg: string; size: number }> = {
         restaurant: { 
           color: "#ef4444", 
-          gradient: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
-          icon: "🍽️",
+          gradient: "linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 50%, #dc2626 100%)",
+          iconSvg: `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/>
+            <path d="M7 2v20"/>
+            <path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3v7"/>
+          </svg>`,
           size: 44
         },
         activity: { 
           color: "#10b981", 
-          gradient: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-          icon: "🎯",
+          gradient: "linear-gradient(135deg, #34d399 0%, #10b981 50%, #059669 100%)",
+          iconSvg: `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+          </svg>`,
           size: 44
         },
         hotel: { 
           color: "#3b82f6", 
-          gradient: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
-          icon: "🏨",
+          gradient: "linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #2563eb 100%)",
+          iconSvg: `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2Z"/>
+            <path d="m9 16 .348-.24c1.465-1.013 3.84-1.013 5.304 0L15 16"/>
+            <path d="M8 7h.01"/><path d="M16 7h.01"/>
+            <path d="M12 7h.01"/><path d="M12 11h.01"/>
+            <path d="M16 11h.01"/><path d="M8 11h.01"/>
+          </svg>`,
           size: 44
         },
         waypoint: { 
           color: "#f59e0b", 
-          gradient: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
-          icon: "📍",
+          gradient: "linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%)",
+          iconSvg: `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2"/>
+            <path d="M12 20v2"/>
+            <path d="M2 12h2"/>
+            <path d="M20 12h2"/>
+          </svg>`,
           size: 32
         }
       }
@@ -565,7 +648,6 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: ${isWaypoint ? "14px" : "18px"};
         box-shadow: 
           inset 0 2px 4px rgba(255, 255, 255, 0.3), 
           inset 0 -2px 4px rgba(0, 0, 0, 0.2),
@@ -574,11 +656,17 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
         transition: transform 0.2s ease, box-shadow 0.2s ease;
       `
 
-      // Create icon container
-      const iconSpan = document.createElement("span")
-      iconSpan.textContent = config.icon
-      iconSpan.style.cssText = `display: block;`
-      inner.appendChild(iconSpan)
+      // Create SVG icon container
+      const iconContainer = document.createElement("div")
+      iconContainer.style.cssText = `
+        width: ${isWaypoint ? "16px" : "22px"};
+        height: ${isWaypoint ? "16px" : "22px"};
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `
+      iconContainer.innerHTML = config.iconSvg
+      inner.appendChild(iconContainer)
       el.appendChild(inner)
       
       // Add price badge if cost data is available
@@ -962,6 +1050,29 @@ export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) 
       markersRef.current.set(markerData.id, marker)
     })
   }, [markers, isLoaded])
+
+  // Fly to target location when flyToTarget changes
+  useEffect(() => {
+    if (!map.current || !isLoaded || !flyToTarget) return
+
+    const { coordinates, zoom = 16 } = flyToTarget
+    if (!coordinates || coordinates.length < 2) return
+
+    const [lat, lng] = coordinates
+    
+    // Validate coordinates
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return
+
+    // Fly to the location with a smooth animation
+    map.current.flyTo({
+      center: [lng, lat],
+      zoom: zoom,
+      duration: 2000,
+      essential: true,
+      curve: 1.5,
+      easing: (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2 // easeInOutCubic
+    })
+  }, [flyToTarget, isLoaded])
 
   return (
     <div className="h-full w-full relative">
