@@ -78,9 +78,14 @@ export function PaymentStatus({
     <div className={`fixed bottom-4 right-4 z-40 max-w-sm w-full mx-4 rounded-lg border ${getStatusColor()} p-4 shadow-xl`}>
       <div className="space-y-3">
         {/* Header */}
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">{getIcon()}</span>
-          <h3 className="font-semibold text-lg">Payment</h3>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">{getIcon()}</span>
+            <h3 className="font-semibold text-lg">Payment</h3>
+          </div>
+          <span className="px-2 py-0.5 bg-yellow-500/20 border border-yellow-500 rounded text-yellow-500 text-xs font-bold">
+            DEVNET
+          </span>
         </div>
 
         {/* Amount and Description */}
