@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Room, Participant, Track, RemoteVideoTrack, LocalVideoTrack, ParticipantKind } from "livekit-client"
+import { Room, Participant, Track, RemoteVideoTrack, LocalVideoTrack, ParticipantKind, RemoteAudioTrack } from "livekit-client"
 
 interface VideoConferenceProps {
   room: Room
@@ -12,7 +12,6 @@ export function VideoConference({ room }: VideoConferenceProps) {
   const [localParticipant, setLocalParticipant] = useState<Participant | null>(null)
 
   useEffect(() => {
-    // Simple, lightweight participant update
     const updateParticipants = () => {
       setParticipants(Array.from(room.remoteParticipants.values()))
       setLocalParticipant(room.localParticipant)
@@ -20,14 +19,12 @@ export function VideoConference({ room }: VideoConferenceProps) {
 
     updateParticipants()
 
-    // Minimal event listeners
     room.on("participantConnected", updateParticipants)
     room.on("participantDisconnected", updateParticipants)
     room.on("trackSubscribed", updateParticipants)
     room.on("trackUnsubscribed", updateParticipants)
 
-    // Less frequent polling (5 seconds)
-    const intervalId = setInterval(updateParticipants, 5000)
+    const intervalId = setInterval(updateParticipants, 3000)
 
     return () => {
       clearInterval(intervalId)
@@ -38,14 +35,13 @@ export function VideoConference({ room }: VideoConferenceProps) {
     }
   }, [room])
 
-  // Simple audio renderer - no extra state or document listeners
-  const AudioRenderer = ({ track }: { track: Track }) => {
+  // Simple audio renderer
+  const AudioRenderer = ({ track }: { track: RemoteAudioTrack }) => {
     const audioRef = useRef<HTMLAudioElement>(null)
 
     useEffect(() => {
       if (audioRef.current && track) {
         track.attach(audioRef.current)
-        audioRef.current.volume = 1.0
         return () => { track.detach() }
       }
     }, [track])
@@ -53,7 +49,7 @@ export function VideoConference({ room }: VideoConferenceProps) {
     return <audio ref={audioRef} autoPlay playsInline />
   }
 
-  // Simple video renderer - no extra state or event listeners
+  // Simple video renderer
   const VideoRenderer = ({ track, isLocal }: { track: RemoteVideoTrack | LocalVideoTrack, isLocal?: boolean }) => {
     const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -81,7 +77,7 @@ export function VideoConference({ room }: VideoConferenceProps) {
       .find((pub) => pub.track)?.track as RemoteVideoTrack | LocalVideoTrack | null
 
     const audioTrack = Array.from(participant.audioTrackPublications.values())
-      .find((pub) => pub.track)?.track
+      .find((pub) => pub.track)?.track as RemoteAudioTrack | null
 
     const rawName = participant.name || participant.identity || "Unknown"
     const isAgent = 
@@ -130,7 +126,7 @@ export function VideoConference({ room }: VideoConferenceProps) {
           </div>
         )}
         
-        {/* Audio for remote participants */}
+        {/* Render audio for remote participants */}
         {!isLocal && audioTrack && <AudioRenderer track={audioTrack} />}
       </div>
     )

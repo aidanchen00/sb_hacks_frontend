@@ -509,7 +509,7 @@ export default function MeetingPage() {
 
       {/* Payment Status Toast */}
       {paymentStatus.type && (
-        <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-right-5 duration-300">
+        <div className="fixed top-4 right-20 z-50 animate-in slide-in-from-right-5 duration-300">
           <div className={`
             p-4 rounded-lg border shadow-xl backdrop-blur-sm max-w-sm
             ${paymentStatus.type === "success" ? "bg-green-900/90 border-green-500/50" : ""}
@@ -550,8 +550,8 @@ export default function MeetingPage() {
         </div>
       )}
 
-      {/* Room & Wallet Status - Top right corner */}
-      <div className="fixed top-4 right-4 z-40 flex flex-col gap-2 items-end">
+      {/* Room & Wallet Status - Top right corner (offset to avoid Mapbox zoom controls) */}
+      <div className="fixed top-4 right-20 z-40 flex flex-col gap-2 items-end">
         {/* Room Name with Share Link */}
         {roomName && (
           <button
