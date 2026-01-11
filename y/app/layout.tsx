@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Metadata, Viewport } from "next"
 import { Analytics } from "@vercel/analytics/next"
+import { SolanaWalletProvider } from "@/components/providers/solana-wallet-provider"
 import "./globals.css"
 
 export const metadata: Metadata = {
@@ -38,7 +39,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`font-sans antialiased`}>
-        {children}
+        <SolanaWalletProvider>
+          {children}
+        </SolanaWalletProvider>
         <Analytics />
       </body>
     </html>
