@@ -14,20 +14,61 @@ export function VideoConference({ room }: VideoConferenceProps) {
   useEffect(() => {
     const updateParticipants = () => {
       const remote = Array.from(room.remoteParticipants.values())
-      setParticipants(remote)
-      setLocalParticipant(room.localParticipant)
       
-      // Log participants for debugging
-      console.log("Participants updated:", {
-        local: room.localParticipant.identity,
-        remote: remote.map(p => ({ 
+      // Log ALL participants including local for debugging
+      const allParticipants = [room.localParticipant, ...remote]
+      console.log("=== PARTICIPANTS UPDATE ===")
+      console.log("Total participants:", allParticipants.length)
+      console.log("Local:", {
+        identity: room.localParticipant.identity,
+        name: room.localParticipant.name,
+        kind: room.localParticipant.kind,
+        kindString: ParticipantKind[room.localParticipant.kind],
+        hasVideo: !!Array.from(room.localParticipant.videoTrackPublications.values()).find(pub => pub.track),
+        hasAudio: !!Array.from(room.localParticipant.audioTrackPublications.values()).find(pub => pub.track),
+      })
+      console.log("Remote participants:", remote.map(p => {
+        const videoPub = Array.from(p.videoTrackPublications.values()).find(pub => pub.track)
+        const audioPub = Array.from(p.audioTrackPublications.values()).find(pub => pub.track)
+        const isAgent = p.kind === ParticipantKind.AGENT || 
+                       p.identity?.toLowerCase().includes("agent") ||
+                       p.name?.toLowerCase().includes("agent") ||
+                       p.name?.toLowerCase().includes("nomadsync")
+        return { 
           identity: p.identity, 
           name: p.name, 
           kind: p.kind,
-          hasVideo: !!Array.from(p.videoTrackPublications.values()).find(pub => pub.track),
-          hasAudio: !!Array.from(p.audioTrackPublications.values()).find(pub => pub.track)
-        }))
-      })
+          kindString: ParticipantKind[p.kind],
+          hasVideo: !!videoPub,
+          hasAudio: !!audioPub,
+          isAgent: isAgent,
+          metadata: p.metadata,
+          sid: p.sid
+        }
+      }))
+      
+      // Check for agent
+      const agentParticipant = remote.find(p => 
+        p.kind === ParticipantKind.AGENT || 
+        p.identity?.toLowerCase().includes("agent") ||
+        p.name?.toLowerCase().includes("agent") ||
+        p.name?.toLowerCase().includes("nomadsync")
+      )
+      
+      if (agentParticipant) {
+        console.log("🤖 AGENT FOUND:", {
+          identity: agentParticipant.identity,
+          name: agentParticipant.name,
+          kind: agentParticipant.kind,
+          sid: agentParticipant.sid
+        })
+      } else {
+        console.log("⚠️ No agent found in remote participants")
+        console.log("   Looking for: kind=AGENT or identity/name containing 'agent' or 'nomadsync'")
+      }
+      
+      setParticipants(remote)
+      setLocalParticipant(room.localParticipant)
     }
 
     // Initial update
@@ -130,14 +171,20 @@ export function VideoConference({ room }: VideoConferenceProps) {
     
     // Check if this is the agent (audio-only participant, usually named "agent" or contains "agent")
     const isAgent = 
+      participant.kind === ParticipantKind.AGENT ||
       participant.identity?.toLowerCase().includes("agent") || 
       participantName?.toLowerCase().includes("agent") ||
-      participantName?.toLowerCase().includes("nomadsync") ||
-      participant.kind === ParticipantKind.AGENT
+      participantName?.toLowerCase().includes("nomadsync")
 
     // Show participant even if no video (agent is audio-only)
+    // IMPORTANT: Always show agent even if it has no tracks yet
     const hasVideo = !!videoTrack
     const hasAudio = !!audioTrack
+    
+    // For agent, always show it even without tracks
+    if (isAgent && !hasVideo && !hasAudio) {
+      console.log("🤖 Rendering agent without tracks:", participant.identity, participant.name)
+    }
 
     return (
       <div
@@ -188,14 +235,22 @@ export function VideoConference({ room }: VideoConferenceProps) {
   }
 
   // Grid layout for participants
-  const gridCols = participants.length <= 1 ? 1 : participants.length <= 4 ? 2 : 3
-  const totalParticipants = participants.length + (localParticipant ? 1 : 0)
+  // Always show all participants including agent (even without tracks)
+  const allParticipants = [
+    ...(localParticipant ? [localParticipant] : []),
+    ...participants
+  ]
+  const gridCols = allParticipants.length <= 1 ? 1 : allParticipants.length <= 4 ? 2 : 3
+  const totalParticipants = allParticipants.length
 
   return (
     <div className="h-full flex flex-col bg-gray-950">
       <div className="p-4 border-b border-border">
         <h2 className="text-xl font-semibold">Meeting Room</h2>
         <p className="text-sm text-gray-400">{totalParticipants} participants</p>
+        {participants.some(p => p.kind === ParticipantKind.AGENT) && (
+          <p className="text-xs text-green-400 mt-1">🤖 Agent connected</p>
+        )}
       </div>
 
       <div
@@ -207,8 +262,10 @@ export function VideoConference({ room }: VideoConferenceProps) {
             : "grid-cols-3"
         }`}
       >
-        {localParticipant && renderParticipant(localParticipant, true)}
-        {participants.map((p) => renderParticipant(p, false))}
+        {allParticipants.map((p) => {
+          const isLocal = p === localParticipant
+          return renderParticipant(p, isLocal)
+        })}
       </div>
 
       {/* Controls */}

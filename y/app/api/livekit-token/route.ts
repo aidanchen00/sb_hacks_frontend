@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { AccessToken } from "livekit-server-sdk"
+import { AccessToken, AgentDispatchClient } from "livekit-server-sdk"
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: participantName || "user",
-      name: participantName || "User"  // Add name metadata
+      name: participantName || "User"
     })
 
     at.addGrant({
@@ -30,6 +30,16 @@ export async function POST(request: NextRequest) {
     })
 
     const token = await at.toJwt()
+
+    // Always try to dispatch agent - LiveKit handles duplicates gracefully
+    try {
+      const agentDispatch = new AgentDispatchClient(livekitUrl, apiKey, apiSecret)
+      await agentDispatch.createDispatch(roomName, "")
+      console.log(`✅ Agent dispatch requested for room: ${roomName}`)
+    } catch (dispatchError: any) {
+      // This is expected if agent is already dispatched or other cases
+      console.log(`ℹ️ Agent dispatch note for ${roomName}:`, dispatchError?.message || dispatchError)
+    }
 
     return NextResponse.json({
       token,
