@@ -4,31 +4,28 @@ import { useWallet } from "@solana/wallet-adapter-react"
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui"
 import { motion, AnimatePresence } from "framer-motion"
 import { Wallet, X } from "lucide-react"
-import { useState, useEffect } from "react"
+import { useEffect } from "react"
 
 interface WalletConnectOverlayProps {
-  onClose?: () => void
+  isOpen: boolean
+  onClose: () => void
 }
 
-export function WalletConnectOverlay({ onClose }: WalletConnectOverlayProps) {
-  const { connected, connecting } = useWallet()
-  const [dismissed, setDismissed] = useState(false)
-  const [showOverlay, setShowOverlay] = useState(true)
+export function WalletConnectOverlay({ isOpen, onClose }: WalletConnectOverlayProps) {
+  const { connected } = useWallet()
 
   // Auto-close overlay when wallet is connected
   useEffect(() => {
-    if (connected) {
+    if (connected && isOpen) {
       // Small delay to show "Connected!" state
       const timer = setTimeout(() => {
-        setShowOverlay(false)
-        onClose?.()
+        onClose()
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [connected, onClose])
+  }, [connected, isOpen, onClose])
 
-  // Don't render if dismissed or connected (after delay)
-  if (dismissed || !showOverlay) return null
+  if (!isOpen) return null
 
   return (
     <AnimatePresence>
@@ -51,7 +48,7 @@ export function WalletConnectOverlay({ onClose }: WalletConnectOverlayProps) {
           <div className="relative bg-gradient-to-br from-gray-900 via-purple-900/50 to-gray-900 rounded-2xl border border-purple-500/30 p-8">
             {/* Dismiss button */}
             <button
-              onClick={() => setDismissed(true)}
+              onClick={onClose}
               className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
             >
               <X className="w-5 h-5" />
@@ -98,7 +95,7 @@ export function WalletConnectOverlay({ onClose }: WalletConnectOverlayProps) {
             {/* Skip option */}
             {!connected && (
               <button
-                onClick={() => setDismissed(true)}
+                onClick={onClose}
                 className="w-full mt-4 text-sm text-gray-500 hover:text-gray-300 transition-colors"
               >
                 Skip for now — you can connect later
@@ -128,4 +125,3 @@ export function WalletConnectOverlay({ onClose }: WalletConnectOverlayProps) {
     </AnimatePresence>
   )
 }
-

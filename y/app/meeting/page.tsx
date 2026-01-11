@@ -28,6 +28,9 @@ export default function MeetingPage() {
   const { connection } = useConnection()
   const [showWalletOverlay, setShowWalletOverlay] = useState(true)
   const [isProcessingPayment, setIsProcessingPayment] = useState(false)
+  
+  // Ref to store handleCheckout for use in data listener
+  const handleCheckoutRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const [paymentStatus, setPaymentStatus] = useState<{
     type: "success" | "error" | "pending" | null
     message: string
@@ -119,7 +122,8 @@ export default function MeetingPage() {
               } else if (data.type === "PAYMENT_EXECUTE") {
                 // Agent confirmed payment - trigger wallet transaction
                 console.log("💳 [PAYMENT] Agent triggered payment execution")
-                handleCheckout()
+                // Use ref to get latest handleCheckout function
+                handleCheckoutRef.current()
               } else {
                 handleMapUpdate(data)
               }
@@ -244,7 +248,7 @@ export default function MeetingPage() {
   // Checkout/Payment handler
   const handleCheckout = useCallback(async () => {
     if (!walletConnected || !publicKey || !sendTransaction) {
-      setPaymentStatus({ type: "error", message: "Please connect your wallet first" })
+      // Don't show error - just show the wallet overlay
       setShowWalletOverlay(true)
       return
     }
@@ -308,14 +312,33 @@ export default function MeetingPage() {
 
     } catch (error: any) {
       console.error("❌ [PAYMENT] Error:", error)
-      setPaymentStatus({
-        type: "error",
-        message: error.message || "Payment failed. Please try again.",
-      })
+      
+      // Check if user rejected the transaction
+      const isUserRejection = 
+        error.message?.includes("User rejected") || 
+        error.message?.includes("rejected") ||
+        error.name === "WalletSendTransactionError"
+      
+      if (isUserRejection) {
+        setPaymentStatus({
+          type: "error",
+          message: "Payment cancelled. You can try again when ready.",
+        })
+      } else {
+        setPaymentStatus({
+          type: "error",
+          message: error.message || "Payment failed. Please try again.",
+        })
+      }
     } finally {
       setIsProcessingPayment(false)
     }
   }, [walletConnected, publicKey, sendTransaction, connection])
+
+  // Update ref when handleCheckout changes (for use in data listener)
+  useEffect(() => {
+    handleCheckoutRef.current = handleCheckout
+  }, [handleCheckout])
 
   // Itinerary handlers
   const handleAddToItinerary = useCallback((item: ItineraryItem) => {
@@ -353,10 +376,11 @@ export default function MeetingPage() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-gray-900">
-      {/* Wallet Connect Overlay - shows on first load if not connected */}
-      {showWalletOverlay && !walletConnected && (
-        <WalletConnectOverlay onClose={() => setShowWalletOverlay(false)} />
-      )}
+      {/* Wallet Connect Overlay - shows on first load if not connected, or when checkout is attempted */}
+      <WalletConnectOverlay 
+        isOpen={showWalletOverlay && !walletConnected} 
+        onClose={() => setShowWalletOverlay(false)} 
+      />
 
       {/* Payment Status Toast */}
       {paymentStatus.type && (
@@ -401,8 +425,8 @@ export default function MeetingPage() {
         </div>
       )}
 
-      {/* Wallet Status Indicator */}
-      <div className="fixed top-4 left-4 z-40">
+      {/* Wallet Status Indicator - Top right corner */}
+      <div className="fixed top-4 right-4 z-40">
         <button
           onClick={() => setShowWalletOverlay(true)}
           className={`
@@ -415,7 +439,7 @@ export default function MeetingPage() {
         >
           <span className={`w-2 h-2 rounded-full ${walletConnected ? "bg-green-400" : "bg-gray-500"}`} />
           {walletConnected ? (
-            <span>{publicKey?.toBase58().slice(0, 4)}...{publicKey?.toBase58().slice(-4)}</span>
+            <span>💳 Wallet Connected</span>
           ) : (
             <span>Connect Wallet</span>
           )}
@@ -426,39 +450,39 @@ export default function MeetingPage() {
       <div className="w-1/2 border-r border-gray-700 overflow-hidden relative">
         {room && <VideoConference room={room} />}
         
-        {/* Agent Thinking State Overlay */}
+        {/* Agent Thinking State Overlay - Above control buttons (bottom-20 leaves room for controls) */}
         {agentState === "thinking" && agentThinkingMessage && (
-          <div className="absolute bottom-4 left-4 right-4 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-gray-900/95 backdrop-blur-sm border border-blue-500/50 rounded-lg p-4 shadow-xl">
+          <div className="absolute bottom-20 left-4 right-4 z-30 animate-in fade-in slide-in-from-bottom-2 duration-300 pointer-events-none">
+            <div className="bg-gray-900/90 backdrop-blur-sm border border-blue-500/50 rounded-lg p-3 shadow-xl">
               <div className="flex items-center gap-3">
                 <div className="flex-shrink-0">
-                  <div className="w-8 h-8 rounded-full bg-blue-600/20 flex items-center justify-center">
-                    <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                  <div className="w-6 h-6 rounded-full bg-blue-600/20 flex items-center justify-center">
+                    <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                   </div>
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-semibold text-blue-400">🤖 Agent Thinking</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-blue-400">🤖 Thinking</span>
                     {currentTool && (
                       <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded">
                         {currentTool.replace('_', ' ')}
                       </span>
                     )}
                   </div>
-                  <p className="text-sm text-gray-300">{agentThinkingMessage}</p>
+                  <p className="text-xs text-gray-300 truncate">{agentThinkingMessage}</p>
                 </div>
               </div>
             </div>
           </div>
         )}
         
-        {/* Agent Speaking Indicator */}
+        {/* Agent Speaking Indicator - Above control buttons */}
         {agentState === "speaking" && (
-          <div className="absolute bottom-4 left-4 right-4 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-green-900/95 backdrop-blur-sm border border-green-500/50 rounded-lg p-3 shadow-xl">
+          <div className="absolute bottom-20 left-4 z-30 animate-in fade-in duration-300 pointer-events-none">
+            <div className="bg-green-900/90 backdrop-blur-sm border border-green-500/50 rounded-full px-3 py-1.5 shadow-lg">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-sm font-semibold text-green-400">🤖 Agent Speaking</span>
+                <span className="text-xs font-semibold text-green-400">🤖 Speaking</span>
               </div>
             </div>
           </div>
