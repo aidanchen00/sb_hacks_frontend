@@ -56,12 +56,24 @@ const customStyles = `
   }
 `
 
+// Itinerary item type for callback
+export interface ItineraryItem {
+  id: string
+  name: string
+  type: "restaurant" | "hotel" | "activity"
+  estimatedCost: number
+  costLabel: string
+  location?: string
+  coordinates?: [number, number]
+}
+
 interface MapboxMapProps {
   route: any
   markers: any[]
+  onAddToItinerary?: (item: ItineraryItem) => void
 }
 
-export function MapboxMap({ route, markers }: MapboxMapProps) {
+export function MapboxMap({ route, markers, onAddToItinerary }: MapboxMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<mapboxgl.Map | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
@@ -568,6 +580,34 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
       iconSpan.style.cssText = `display: block;`
       inner.appendChild(iconSpan)
       el.appendChild(inner)
+      
+      // Add price badge if cost data is available
+      const costPerPerson = markerData.data?.estimated_cost_per_person
+      const costPerNight = markerData.data?.estimated_cost_per_night
+      const displayCost = costPerPerson || costPerNight
+      
+      if (displayCost && !isWaypoint) {
+        const priceBadge = document.createElement("div")
+        priceBadge.className = "price-badge"
+        priceBadge.style.cssText = `
+          position: absolute;
+          bottom: -8px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: linear-gradient(135deg, #8b5cf6, #6366f1);
+          color: white;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 2px 6px;
+          border-radius: 8px;
+          white-space: nowrap;
+          box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          z-index: 10;
+        `
+        priceBadge.textContent = `~$${displayCost}`
+        el.appendChild(priceBadge)
+      }
 
       // Add hover effect - only modify the inner element, not the outer
       el.addEventListener("mouseenter", () => {
@@ -601,6 +641,14 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
       const imageUrl = data.image_url || data.photo_url
       const yelpUrl = data.yelp_url
       const reviewHighlight = data.review_highlight
+      
+      // Cost estimation fields from agent
+      const estimatedCostPerPerson = data.estimated_cost_per_person
+      const estimatedCostPerNight = data.estimated_cost_per_night
+      const estimatedTotal = data.estimated_total
+      const numGuests = data.num_guests
+      const numRooms = data.num_rooms
+      const nights = data.nights
 
       // Create popup HTML with beautiful styling
       const popupHTML = `
@@ -665,6 +713,78 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
               ` : ""}
             </div>
             
+            ${(estimatedCostPerPerson || estimatedCostPerNight) ? `
+              <div style="
+                margin: 10px 0;
+                padding: 12px;
+                background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.1));
+                border-radius: 10px;
+                border: 1px solid rgba(139, 92, 246, 0.3);
+              ">
+                <div style="
+                  font-size: 11px;
+                  color: #a78bfa;
+                  text-transform: uppercase;
+                  letter-spacing: 0.5px;
+                  margin-bottom: 6px;
+                  font-weight: 600;
+                ">💰 Estimated Cost</div>
+                ${estimatedCostPerPerson ? `
+                  <div style="
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin-bottom: ${estimatedTotal ? '4px' : '0'};
+                  ">
+                    <span style="font-size: 13px; color: #d4d4d8;">Per person:</span>
+                    <span style="
+                      font-size: 16px;
+                      font-weight: 600;
+                      color: #c4b5fd;
+                    ">~$${estimatedCostPerPerson}</span>
+                  </div>
+                ` : ""}
+                ${estimatedCostPerNight ? `
+                  <div style="
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin-bottom: ${estimatedTotal ? '4px' : '0'};
+                  ">
+                    <span style="font-size: 13px; color: #d4d4d8;">Per night${numRooms > 1 ? '/room' : ''}:</span>
+                    <span style="
+                      font-size: 16px;
+                      font-weight: 600;
+                      color: #c4b5fd;
+                    ">~$${estimatedCostPerNight}</span>
+                  </div>
+                ` : ""}
+                ${estimatedTotal ? `
+                  <div style="
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding-top: 8px;
+                    margin-top: 6px;
+                    border-top: 1px solid rgba(139, 92, 246, 0.2);
+                  ">
+                    <span style="
+                      font-size: 13px;
+                      font-weight: 500;
+                      color: #e4e4e7;
+                    ">
+                      Total${numGuests > 1 ? ` (${numGuests} guests${numRooms > 1 ? `, ${numRooms} rooms` : ''}${nights > 1 ? `, ${nights} nights` : ''})` : ''}:
+                    </span>
+                    <span style="
+                      font-size: 18px;
+                      font-weight: 700;
+                      color: #a78bfa;
+                    ">~$${estimatedTotal}</span>
+                  </div>
+                ` : ""}
+              </div>
+            ` : ""}
+            
             ${categories ? `
               <p style="
                 margin: 0 0 8px 0;
@@ -724,27 +844,67 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
               </div>
             ` : ""}
             
-            ${yelpUrl ? `
-              <a href="${yelpUrl}" target="_blank" rel="noopener noreferrer" style="
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                margin-top: 8px;
-                padding: 8px 12px;
-                background: ${config.gradient};
-                color: white;
-                text-decoration: none;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 500;
-                transition: opacity 0.2s;
-              " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
-                View on Yelp →
-              </a>
-            ` : ""}
+            <div style="
+              display: flex;
+              gap: 8px;
+              margin-top: 12px;
+              flex-wrap: wrap;
+            ">
+              ${yelpUrl ? `
+                <a href="${yelpUrl}" target="_blank" rel="noopener noreferrer" style="
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 6px;
+                  padding: 8px 12px;
+                  background: ${config.gradient};
+                  color: white;
+                  text-decoration: none;
+                  border-radius: 8px;
+                  font-size: 13px;
+                  font-weight: 500;
+                  transition: opacity 0.2s;
+                " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+                  View on Yelp →
+                </a>
+              ` : ""}
+              
+              ${markerData.type !== "waypoint" ? `
+                <button 
+                  class="add-to-itinerary-btn"
+                  data-marker-id="${markerData.id}"
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 8px 12px;
+                    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: 500;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                  " 
+                  onmouseover="this.style.transform='scale(1.05)';this.style.boxShadow='0 4px 12px rgba(139, 92, 246, 0.4)'"
+                  onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'"
+                >
+                  ➕ Add to Itinerary
+                </button>
+              ` : ""}
+            </div>
           </div>
         </div>
       `
+
+      // Create popup
+      const popup = new mapboxgl.Popup({
+        className: "custom-popup",
+        closeButton: true,
+        closeOnClick: false,
+        maxWidth: "340px",
+        offset: [0, -config.size / 2 - 5] // Popup appears above the marker
+      }).setHTML(popupHTML)
 
       // Create and add marker - anchor at center for circular markers
       const marker = new mapboxgl.Marker({
@@ -752,16 +912,52 @@ export function MapboxMap({ route, markers }: MapboxMapProps) {
         anchor: "center"
       })
         .setLngLat([lng, lat])
-        .setPopup(
-          new mapboxgl.Popup({
-            className: "custom-popup",
-            closeButton: true,
-            closeOnClick: false,
-            maxWidth: "340px",
-            offset: [0, -config.size / 2 - 5] // Popup appears above the marker
-          }).setHTML(popupHTML)
-        )
+        .setPopup(popup)
         .addTo(mapInstance)
+
+      // Add event listener for "Add to Itinerary" button after popup opens
+      popup.on("open", () => {
+        const popupEl = popup.getElement()
+        const addBtn = popupEl?.querySelector(".add-to-itinerary-btn")
+        if (addBtn && onAddToItinerary) {
+          addBtn.addEventListener("click", (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            
+            // Determine cost label and estimated cost
+            const costPerPerson = data.estimated_cost_per_person
+            const costPerNight = data.estimated_cost_per_night
+            const estimatedTotal = data.estimated_total || costPerPerson || costPerNight || 0
+            
+            let costLabel = ""
+            if (costPerPerson) {
+              costLabel = `~$${costPerPerson}/person`
+            } else if (costPerNight) {
+              costLabel = `~$${costPerNight}/night`
+            } else if (data.price) {
+              costLabel = data.price
+            }
+            
+            const itineraryItem: ItineraryItem = {
+              id: `${markerData.type}-${name.toLowerCase().replace(/\s+/g, "-")}`,
+              name: name,
+              type: markerData.type as "restaurant" | "hotel" | "activity",
+              estimatedCost: estimatedTotal,
+              costLabel: costLabel,
+              location: address,
+              coordinates: [lat, lng]
+            }
+            
+            onAddToItinerary(itineraryItem)
+            
+            // Visual feedback - change button to "Added"
+            const btn = e.target as HTMLButtonElement
+            btn.innerHTML = "✓ Added!"
+            btn.style.background = "linear-gradient(135deg, #22c55e, #16a34a)"
+            btn.disabled = true
+          })
+        }
+      })
 
       markersRef.current.set(markerData.id, marker)
     })

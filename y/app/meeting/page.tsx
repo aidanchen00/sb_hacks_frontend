@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacket_Kind } from "livekit-client"
 import { VideoConference } from "@/components/meeting/video-conference"
 import { MapboxMap } from "@/components/meeting/mapbox-map"
+import { ItineraryPanel, ItineraryItem } from "@/components/meeting/itinerary-panel"
 
 export default function MeetingPage() {
   const [room, setRoom] = useState<Room | null>(null)
@@ -14,6 +15,7 @@ export default function MeetingPage() {
   const [agentThinkingMessage, setAgentThinkingMessage] = useState<string | null>(null)
   const [currentTool, setCurrentTool] = useState<string | null>(null)
   const [roomName, setRoomName] = useState<string>("")
+  const [itinerary, setItinerary] = useState<ItineraryItem[]>([])
 
   useEffect(() => {
     // Initialize LiveKit room
@@ -64,6 +66,23 @@ export default function MeetingPage() {
                 setAgentState(data.state || "idle")
                 setAgentThinkingMessage(data.thinking_message || null)
                 setCurrentTool(data.tool_name || null)
+              } else if (data.type === "ITINERARY_ADD") {
+                // Add item to itinerary
+                const newItem: ItineraryItem = data.item
+                setItinerary((prev) => {
+                  // Prevent duplicates
+                  if (prev.some((i) => i.id === newItem.id)) {
+                    return prev
+                  }
+                  return [...prev, newItem]
+                })
+              } else if (data.type === "ITINERARY_REMOVE") {
+                // Remove item from itinerary by name (fuzzy match)
+                const itemName = data.item_name?.toLowerCase()
+                setItinerary((prev) => prev.filter((i) => !i.name.toLowerCase().includes(itemName)))
+              } else if (data.type === "ITINERARY_CLEAR") {
+                // Clear all itinerary items
+                setItinerary([])
               } else {
                 handleMapUpdate(data)
               }
@@ -177,6 +196,29 @@ export default function MeetingPage() {
     }
   }
 
+  // Itinerary handlers
+  const handleAddToItinerary = useCallback((item: ItineraryItem) => {
+    setItinerary((prev) => {
+      // Prevent duplicates
+      if (prev.some((i) => i.id === item.id)) {
+        return prev
+      }
+      return [...prev, item]
+    })
+  }, [])
+
+  const handleRemoveFromItinerary = useCallback((itemId: string) => {
+    setItinerary((prev) => prev.filter((i) => i.id !== itemId))
+  }, [])
+
+  const handleClearItinerary = useCallback(() => {
+    setItinerary([])
+  }, [])
+
+  const handleReorderItinerary = useCallback((newItems: ItineraryItem[]) => {
+    setItinerary(newItems)
+  }, [])
+
   if (!isConnected) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -235,7 +277,19 @@ export default function MeetingPage() {
 
       {/* Right Side: Mapbox Map */}
       <div className="w-1/2 overflow-hidden relative">
-        <MapboxMap route={mapRoute} markers={mapMarkers} />
+        <MapboxMap 
+          route={mapRoute} 
+          markers={mapMarkers} 
+          onAddToItinerary={handleAddToItinerary}
+        />
+        
+        {/* Itinerary Panel */}
+        <ItineraryPanel
+          items={itinerary}
+          onRemoveItem={handleRemoveFromItinerary}
+          onClearAll={handleClearItinerary}
+          onReorder={handleReorderItinerary}
+        />
       </div>
     </div>
   )
