@@ -1,13 +1,23 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Room, Participant, Track, RemoteVideoTrack, LocalVideoTrack, ParticipantKind, RemoteAudioTrack } from "livekit-client"
+import { Room, Participant, RemoteVideoTrack, LocalVideoTrack, ParticipantKind } from "livekit-client"
+
+// Transcript message interface
+interface TranscriptMessage {
+  id: string
+  role: "assistant" | "user"
+  text: string
+  timestamp: number
+}
 
 interface VideoConferenceProps {
   room: Room
+  transcript?: TranscriptMessage[]
+  onClearTranscript?: () => void
 }
 
-export function VideoConference({ room }: VideoConferenceProps) {
+export function VideoConference({ room, transcript = [], onClearTranscript }: VideoConferenceProps) {
   const [participants, setParticipants] = useState<Participant[]>([])
   const [localParticipant, setLocalParticipant] = useState<Participant | null>(null)
 
@@ -35,19 +45,8 @@ export function VideoConference({ room }: VideoConferenceProps) {
     }
   }, [room])
 
-  // Simple audio renderer
-  const AudioRenderer = ({ track }: { track: RemoteAudioTrack }) => {
-    const audioRef = useRef<HTMLAudioElement>(null)
-
-    useEffect(() => {
-      if (audioRef.current && track) {
-        track.attach(audioRef.current)
-        return () => { track.detach() }
-      }
-    }, [track])
-
-    return <audio ref={audioRef} autoPlay playsInline />
-  }
+  // NOTE: Audio is handled DIRECTLY in meeting/page.tsx via TrackSubscribed events
+  // This component only handles VIDEO rendering - no AudioRenderer needed here
 
   // Simple video renderer
   const VideoRenderer = ({ track, isLocal }: { track: RemoteVideoTrack | LocalVideoTrack, isLocal?: boolean }) => {
@@ -76,8 +75,9 @@ export function VideoConference({ room }: VideoConferenceProps) {
     const videoTrack = Array.from(participant.videoTrackPublications.values())
       .find((pub) => pub.track)?.track as RemoteVideoTrack | LocalVideoTrack | null
 
-    const audioTrack = Array.from(participant.audioTrackPublications.values())
-      .find((pub) => pub.track)?.track as RemoteAudioTrack | null
+    // Check if participant has audio (for UI indicator only - actual audio handled in page.tsx)
+    const hasAudio = Array.from(participant.audioTrackPublications.values())
+      .some((pub) => pub.track && !pub.isMuted)
 
     const rawName = participant.name || participant.identity || "Unknown"
     const isAgent = 
@@ -88,46 +88,77 @@ export function VideoConference({ room }: VideoConferenceProps) {
     const participantName = isAgent ? "Nomad" : rawName
 
     return (
-      <div
-        key={participant.identity}
-        className={`relative bg-gray-900 rounded-lg overflow-hidden aspect-video ${
-          isLocal ? "ring-2 ring-primary" : ""
-        } ${isAgent ? "ring-2 ring-blue-500" : ""}`}
-      >
-        {videoTrack ? (
-          <VideoRenderer track={videoTrack} isLocal={isLocal} />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gray-800">
-            <div className="text-center">
-              <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-2 overflow-hidden">
-                {isAgent ? (
-                  <img src="/deepgram-logo.png" alt="Nomad" className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-2xl">{participantName?.charAt(0).toUpperCase() || "?"}</span>
-                )}
+      <div key={participant.identity} className="flex flex-col gap-2">
+        <div
+          className={`relative bg-gray-900 rounded-lg overflow-hidden aspect-video ${
+            isLocal ? "ring-2 ring-primary" : ""
+          } ${isAgent ? "ring-2 ring-blue-500" : ""}`}
+        >
+          {videoTrack ? (
+            <VideoRenderer track={videoTrack} isLocal={isLocal} />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gray-800">
+              <div className="text-center">
+                <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-2 overflow-hidden">
+                  {isAgent ? (
+                    <img src="/deepgram-logo.png" alt="Nomad" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-2xl">{participantName?.charAt(0).toUpperCase() || "?"}</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-400">{participantName}</p>
+                {hasAudio && <p className="text-xs text-green-400 mt-1">🔊 Audio</p>}
               </div>
-              <p className="text-sm text-gray-400">{participantName}</p>
-              {audioTrack && <p className="text-xs text-green-400 mt-1">🔊 Audio</p>}
+            </div>
+          )}
+          
+          {isAgent && (
+            <div className="absolute top-2 left-2 bg-blue-600/90 text-white px-2 py-1 rounded text-xs font-semibold flex items-center gap-1.5">
+              <img src="/deepgram-logo.png" alt="" className="w-4 h-4 rounded-full" />
+              Nomad
+            </div>
+          )}
+
+          {hasAudio && (
+            <div className="absolute bottom-2 left-2 flex items-center gap-1">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="text-xs text-green-400">Live</span>
+            </div>
+          )}
+          
+          {/* AUDIO IS NOW HANDLED DIRECTLY IN page.tsx - NOT HERE */}
+        </div>
+        
+        {/* Transcript Panel - Only shown under Nomad's box */}
+        {isAgent && transcript.length > 0 && (
+          <div className="bg-gray-900/95 backdrop-blur-md border border-gray-700/50 rounded-lg shadow-lg overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-700/50 bg-gray-800/50">
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-pulse"></div>
+                <span className="text-xs font-semibold text-purple-400 uppercase tracking-wide">Nomad Says</span>
+              </div>
+              {onClearTranscript && (
+                <button
+                  onClick={onClearTranscript}
+                  className="text-gray-500 hover:text-gray-300 text-xs px-1"
+                  title="Clear transcript"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            
+            {/* Messages */}
+            <div className="max-h-24 overflow-y-auto p-2 space-y-1">
+              {transcript.slice(-3).map((msg) => (
+                <p key={msg.id} className="text-xs text-gray-300 leading-relaxed">
+                  {msg.text}
+                </p>
+              ))}
             </div>
           </div>
         )}
-        
-        {isAgent && (
-          <div className="absolute top-2 left-2 bg-blue-600/90 text-white px-2 py-1 rounded text-xs font-semibold flex items-center gap-1.5">
-            <img src="/deepgram-logo.png" alt="" className="w-4 h-4 rounded-full" />
-            Nomad
-          </div>
-        )}
-
-        {audioTrack && !audioTrack.isMuted && (
-          <div className="absolute bottom-2 left-2 flex items-center gap-1">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-            <span className="text-xs text-green-400">Live</span>
-          </div>
-        )}
-        
-        {/* Render audio for remote participants */}
-        {!isLocal && audioTrack && <AudioRenderer track={audioTrack} />}
       </div>
     )
   }

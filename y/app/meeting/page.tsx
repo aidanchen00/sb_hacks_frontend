@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
-import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacket_Kind } from "livekit-client"
+import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacket_Kind, Track, RemoteTrack, RemoteTrackPublication, RemoteAudioTrack } from "livekit-client"
 import { useWallet, useConnection } from "@solana/wallet-adapter-react"
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
 import { VideoConference } from "@/components/meeting/video-conference"
@@ -19,6 +19,14 @@ interface ToolNotification {
   tool: string
   message: string
   icon: string
+}
+
+// Transcript message interface
+interface TranscriptMessage {
+  id: string
+  role: "assistant" | "user"
+  text: string
+  timestamp: number
 }
 
 // Map tool names to user-friendly messages and icons
@@ -53,6 +61,14 @@ export default function MeetingPage() {
   const [toolNotifications, setToolNotifications] = useState<ToolNotification[]>([])
   const [routeNotification, setRouteNotification] = useState<string | null>(null)
   
+  // Transcript state - store agent responses for display
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([])
+  
+  // DIRECT AUDIO PLAYBACK - Store audio elements for agent audio (NOT using participant tracks)
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const audioTracksRef = useRef<Map<string, RemoteAudioTrack>>(new Map())
+  const audioHealthCheckRef = useRef<NodeJS.Timeout | null>(null)
+  
   // Wallet and payment states (from Solana feature)
   const { publicKey, sendTransaction, connected: walletConnected } = useWallet()
   const { connection } = useConnection()
@@ -70,6 +86,9 @@ export default function MeetingPage() {
   // Check if Phantom is installed
   const [phantomInstalled, setPhantomInstalled] = useState(false)
   
+  // Track if user has interacted with page (for autoplay policy)
+  const [userInteracted, setUserInteracted] = useState(false)
+  
   useEffect(() => {
     // Check for Phantom wallet
     const checkPhantom = () => {
@@ -81,6 +100,101 @@ export default function MeetingPage() {
     // Re-check after a short delay (Phantom might load after page)
     const timer = setTimeout(checkPhantom, 500)
     return () => clearTimeout(timer)
+  }, [])
+  
+  // Handle user interaction to enable audio playback
+  useEffect(() => {
+    const enableAudioPlayback = () => {
+      if (!userInteracted) {
+        setUserInteracted(true)
+        console.log("🔊 [AUDIO] User interaction detected - audio playback enabled")
+        
+        // Try to play all existing audio elements
+        audioElementsRef.current.forEach((audioEl, trackId) => {
+          if (audioEl.paused) {
+            audioEl.play().then(() => {
+              console.log(`🔊 [AUDIO] ✅ Now playing: ${trackId}`)
+            }).catch(err => {
+              console.error(`🔊 [AUDIO] ❌ Still can't play: ${trackId}`, err)
+            })
+          }
+        })
+      }
+    }
+    
+    // Listen for any user interaction
+    document.addEventListener('click', enableAudioPlayback)
+    document.addEventListener('keydown', enableAudioPlayback)
+    document.addEventListener('touchstart', enableAudioPlayback)
+    
+    return () => {
+      document.removeEventListener('click', enableAudioPlayback)
+      document.removeEventListener('keydown', enableAudioPlayback)
+      document.removeEventListener('touchstart', enableAudioPlayback)
+    }
+  }, [userInteracted])
+  
+  // AUDIO HEALTH CHECK - Periodically ensure audio is still playing
+  useEffect(() => {
+    const checkAudioHealth = () => {
+      audioElementsRef.current.forEach((audioEl, trackId) => {
+        const track = audioTracksRef.current.get(trackId)
+        
+        // Check if audio element is in a bad state
+        if (audioEl.paused || audioEl.ended || audioEl.muted || audioEl.volume === 0) {
+          console.log(`🔊 [AUDIO HEALTH] Fixing audio for: ${trackId}`)
+          
+          // Reset audio element state
+          audioEl.muted = false
+          audioEl.volume = 1.0
+          
+          // Re-attach track if we have it
+          if (track) {
+            track.detach(audioEl)
+            track.attach(audioEl)
+          }
+          
+          // Try to play
+          audioEl.play().catch(err => {
+            console.error(`🔊 [AUDIO HEALTH] Could not resume: ${trackId}`, err)
+          })
+        }
+      })
+    }
+    
+    // Run health check every 2 seconds
+    audioHealthCheckRef.current = setInterval(checkAudioHealth, 2000)
+    
+    return () => {
+      if (audioHealthCheckRef.current) {
+        clearInterval(audioHealthCheckRef.current)
+      }
+    }
+  }, [])
+  
+  // Handle visibility change - resume audio when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log("🔊 [AUDIO] Tab visible - resuming all audio")
+        audioElementsRef.current.forEach((audioEl, trackId) => {
+          const track = audioTracksRef.current.get(trackId)
+          
+          // Re-attach and play
+          if (track) {
+            track.detach(audioEl)
+            track.attach(audioEl)
+          }
+          
+          audioEl.muted = false
+          audioEl.volume = 1.0
+          audioEl.play().catch(console.error)
+        })
+      }
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
   useEffect(() => {
@@ -94,12 +208,12 @@ export default function MeetingPage() {
           localStorage.setItem("userName", userName)
         }
         
-        // Room name priority: URL param > env variable > default
-        // Use ?room=my-room in URL to share with teammates
+        // Room name: Use URL param if provided, otherwise generate a UNIQUE room each time
+        // This ensures a fresh agent for every new meeting!
         const urlRoom = searchParams.get("room")
-        const newRoomName = urlRoom || DEFAULT_ROOM_NAME
+        const newRoomName = urlRoom || `nomad-${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 4)}`
         setRoomName(newRoomName)
-        console.log(`🏠 Joining room: ${newRoomName}${urlRoom ? " (from URL)" : " (default)"}`)
+        console.log(`🏠 Joining room: ${newRoomName}${urlRoom ? " (from URL)" : " (NEW unique room)"}`)
         
         const response = await fetch("/api/livekit-token", {
           method: "POST",
@@ -120,6 +234,142 @@ export default function MeetingPage() {
           adaptiveStream: true,
           dynacast: true,
         })
+        
+        // ============================================================
+        // BULLETPROOF AUDIO PLAYBACK - Handle agent audio with auto-recovery
+        // This ensures the agent is ALWAYS heard
+        // ============================================================
+        const handleTrackSubscribed = (
+          track: RemoteTrack,
+          publication: RemoteTrackPublication,
+          participant: RemoteParticipant
+        ) => {
+          console.log(`🔊 [AUDIO] Track subscribed: ${track.kind} from ${participant.identity}`)
+          
+          // Only handle audio tracks
+          if (track.kind === Track.Kind.Audio) {
+            const audioTrack = track as RemoteAudioTrack
+            const trackId = `${participant.identity}-${publication.trackSid}`
+            
+            console.log(`🔊 [AUDIO] Setting up audio from: ${participant.identity}`)
+            
+            // Remove any existing audio element for this track
+            const existingEl = audioElementsRef.current.get(trackId)
+            if (existingEl) {
+              audioTrack.detach(existingEl)
+              existingEl.remove()
+            }
+            
+            // Create a new audio element for this track
+            const audioElement = document.createElement('audio')
+            audioElement.autoplay = true
+            audioElement.playsInline = true
+            audioElement.id = `audio-${trackId}`
+            
+            // CRITICAL: Set volume to max and ensure it's not muted
+            audioElement.volume = 1.0
+            audioElement.muted = false
+            
+            // Add event listeners for debugging and recovery
+            audioElement.addEventListener('pause', () => {
+              console.log(`🔊 [AUDIO] ⚠️ Audio paused for ${participant.identity} - attempting resume`)
+              audioElement.play().catch(console.error)
+            })
+            
+            audioElement.addEventListener('ended', () => {
+              console.log(`🔊 [AUDIO] Audio ended for ${participant.identity}`)
+            })
+            
+            audioElement.addEventListener('error', (e) => {
+              console.error(`🔊 [AUDIO] ❌ Audio error for ${participant.identity}:`, e)
+              // Try to re-attach
+              audioTrack.detach(audioElement)
+              audioTrack.attach(audioElement)
+              audioElement.play().catch(console.error)
+            })
+            
+            // Attach the track to the audio element
+            audioTrack.attach(audioElement)
+            
+            // Add to DOM (hidden) to ensure it plays
+            audioElement.style.display = 'none'
+            document.body.appendChild(audioElement)
+            
+            // Store references for cleanup and health check
+            audioElementsRef.current.set(trackId, audioElement)
+            audioTracksRef.current.set(trackId, audioTrack)
+            
+            // Force play with retry logic
+            const attemptPlay = (retries = 3) => {
+              audioElement.play().then(() => {
+                console.log(`🔊 [AUDIO] ✅ Playing audio from ${participant.identity}`)
+              }).catch((err) => {
+                console.error(`🔊 [AUDIO] ❌ Play failed (retries left: ${retries}):`, err)
+                if (retries > 0) {
+                  setTimeout(() => attemptPlay(retries - 1), 500)
+                } else {
+                  // Last resort - try on next user interaction
+                  const playOnClick = () => {
+                    audioElement.play().catch(console.error)
+                    document.removeEventListener('click', playOnClick)
+                  }
+                  document.addEventListener('click', playOnClick)
+                }
+              })
+            }
+            
+            attemptPlay()
+          }
+        }
+        
+        const handleTrackUnsubscribed = (
+          track: RemoteTrack,
+          publication: RemoteTrackPublication,
+          participant: RemoteParticipant
+        ) => {
+          if (track.kind === Track.Kind.Audio) {
+            const trackId = `${participant.identity}-${publication.trackSid}`
+            const audioElement = audioElementsRef.current.get(trackId)
+            
+            if (audioElement) {
+              console.log(`🔊 [AUDIO] Removing audio for: ${participant.identity}`)
+              const audioTrack = track as RemoteAudioTrack
+              audioTrack.detach(audioElement)
+              audioElement.remove()
+              audioElementsRef.current.delete(trackId)
+              audioTracksRef.current.delete(trackId)
+            }
+          }
+        }
+        
+        // Handle track muted/unmuted events
+        const handleTrackMuted = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (publication.kind === Track.Kind.Audio) {
+            console.log(`🔊 [AUDIO] Track muted: ${participant.identity}`)
+          }
+        }
+        
+        const handleTrackUnmuted = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (publication.kind === Track.Kind.Audio) {
+            console.log(`🔊 [AUDIO] Track unmuted: ${participant.identity} - ensuring playback`)
+            const trackId = `${participant.identity}-${publication.trackSid}`
+            const audioElement = audioElementsRef.current.get(trackId)
+            const audioTrack = audioTracksRef.current.get(trackId)
+            
+            if (audioElement && audioTrack) {
+              audioTrack.detach(audioElement)
+              audioTrack.attach(audioElement)
+              audioElement.play().catch(console.error)
+            }
+          }
+        }
+        
+        // Register audio handlers BEFORE connecting
+        newRoom.on(RoomEvent.TrackSubscribed, handleTrackSubscribed)
+        newRoom.on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed)
+        newRoom.on(RoomEvent.TrackMuted, handleTrackMuted)
+        newRoom.on(RoomEvent.TrackUnmuted, handleTrackUnmuted)
+        // ============================================================
         
         // Set up data channel listener for map updates and agent state
         newRoom.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
@@ -182,6 +432,19 @@ export default function MeetingPage() {
                 console.log("💳 [PAYMENT] Agent triggered payment execution")
                 // Use ref to get latest handleCheckout function
                 handleCheckoutRef.current()
+              } else if (data.type === "TRANSCRIPT") {
+                // Handle transcript message from agent
+                const newMessage: TranscriptMessage = {
+                  id: `transcript-${data.timestamp || Date.now()}`,
+                  role: data.role || "assistant",
+                  text: data.text || "",
+                  timestamp: data.timestamp || Date.now()
+                }
+                setTranscript(prev => {
+                  // Keep only last 5 messages
+                  const updated = [...prev, newMessage].slice(-5)
+                  return updated
+                })
               } else {
                 handleMapUpdate(data)
               }
@@ -215,6 +478,23 @@ export default function MeetingPage() {
     connectToRoom()
 
     return () => {
+      // Clean up health check interval
+      if (audioHealthCheckRef.current) {
+        clearInterval(audioHealthCheckRef.current)
+      }
+      
+      // Clean up all audio elements and tracks
+      audioElementsRef.current.forEach((audioEl, trackId) => {
+        const track = audioTracksRef.current.get(trackId)
+        if (track) {
+          track.detach(audioEl)
+        }
+        audioEl.pause()
+        audioEl.remove()
+      })
+      audioElementsRef.current.clear()
+      audioTracksRef.current.clear()
+      
       if (room) {
         room.disconnect()
       }
@@ -589,7 +869,7 @@ export default function MeetingPage() {
 
       {/* Left Side: Video Conference */}
       <div className="w-1/2 border-r border-gray-700 overflow-hidden relative">
-        {room && <VideoConference room={room} />}
+        {room && <VideoConference room={room} transcript={transcript} onClearTranscript={() => setTranscript([])} />}
         
         {/* Agent Thinking State Overlay - Above control buttons (bottom-20 leaves room for controls) */}
         {agentState === "thinking" && agentThinkingMessage && (

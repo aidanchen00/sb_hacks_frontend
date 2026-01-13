@@ -1,11 +1,17 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 
 export function FinalCtaSection() {
   const [isVisible, setIsVisible] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
+  const router = useRouter()
+  
+  const startNewTrip = () => {
+    router.push("/meeting")
+  }
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -34,6 +40,7 @@ export function FinalCtaSection() {
       <div className="container mx-auto px-6 text-center">
         <Button
           size="lg"
+          onClick={startNewTrip}
           className="bg-accent-blue hover:bg-accent-blue/90 text-foreground px-8 py-6 text-lg font-medium mb-6"
         >
           Start a Trip

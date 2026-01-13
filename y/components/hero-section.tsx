@@ -1,11 +1,19 @@
 "use client"
 
 import { useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
 
 export function HeroSection() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const router = useRouter()
+  
+  // Generate a unique room name and navigate to it
+  const startNewTrip = () => {
+    const roomId = `trip-${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 4)}`
+    router.push(`/meeting?room=${roomId}`)
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -91,14 +99,13 @@ export function HeroSection() {
           Turn live conversations into a shared itinerary—maps, places, and bookings update as you talk.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2">
-          <Link href="/meeting">
           <Button
             size="lg"
+            onClick={startNewTrip}
             className="bg-accent-blue hover:bg-accent-blue/90 text-foreground px-8 py-6 text-lg font-medium"
           >
             Start a Trip
           </Button>
-          </Link>
           <Link href="#how-it-works" className="text-muted-foreground hover:text-foreground transition-colors text-sm">
             See how it works
           </Link>
